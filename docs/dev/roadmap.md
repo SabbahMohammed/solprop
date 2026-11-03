@@ -89,3 +89,10 @@ The [SEP index](seps/index.md) lists every proposal and its current status.
   subtraction, a weak-response limit and local temporal integration. Its ensemble,
   data and integration questions must be settled before acceptance; shared-level
   ladders, vector saturation and repeated-window histories remain future work.
+- [SEP 44 — Trace absorbing gases and neutral dissociation channels for photochemistry coupling](seps/sep-0044-trace-absorbers-neutral-channels.md):
+  a gas-only loss for capillaries and tube lattices (the fill's absorption without the
+  wall's), a field-driven loss channel that frees no electron for strong-field
+  dissociation (a per-channel electrons-per-event weight and a kernel-schema change),
+  caller-supplied trace absorbers, and the Raman of air beside traces and a drifting
+  composition, stated with its options. The chemistry, curated trace-gas data and
+  fragment dynamics remain outside it.
