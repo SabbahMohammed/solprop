@@ -460,6 +460,9 @@ def test_each_response_is_described_by_its_model():
     assert _response(PlasmaResponse("Ar", rate)) == (
         "plasma (Ar), rate optmat recommended"
     )
+    assert _response(PlasmaResponse("Ar", rate, electrons_per_event=0.0)) == (
+        "neutral loss channel (Ar), rate optmat recommended"
+    )
     assert _response(EnvelopePlasmaResponse("Ar", rate)) == (
         "envelope plasma (Ar), rate optmat recommended"
     )

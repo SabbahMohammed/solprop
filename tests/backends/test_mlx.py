@@ -37,6 +37,7 @@ from backends.test_single_precision import (
     spatial_kerr,
 )
 from bounds import EPS_32, UNIT_ROUNDOFF_32, assert_within, fft_bound, higham_gamma
+from mixture_cases import mixture_case
 from solprop.backends.memory import estimate_memory
 from solprop.backends.mlx_gpu.arithmetic import (
     DoubleFloatTerms,
@@ -46,7 +47,7 @@ from solprop.backends.mlx_gpu.arithmetic import (
     population,
     prefix_scan,
 )
-from solprop.backends.mlx_gpu.backend import MlxBackend
+from solprop.backends.mlx_gpu.backend import MlxBackend, refuse_unsupported
 from solprop.backends.mlx_gpu.envelope import DeviceCycle, envelope_cycle
 from solprop.backends.mlx_gpu.passes import DeviceRateTable
 from solprop.backends.numpy_ref.envelope_plasma import (
@@ -138,6 +139,14 @@ def test_mlx_is_a_single_precision_backend_only():
     )  # fmt: skip
     if mx.metal.is_available():
         assert simulation.settings.backend == "mlx"
+
+
+def test_a_neutral_plasma_channel_is_refused_by_name():
+    # Kernel schema 42's neutral channel is not qualified on mlx.
+    problem = mixture_case(electrons_per_event=(1.0, 0.0))[-1]
+    single = dataclasses.replace(problem, precision=SINGLE)
+    with pytest.raises(BackendError, match="neutral plasma channel"):
+        refuse_unsupported(single)
 
 
 # Class R against the oracle.

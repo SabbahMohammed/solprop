@@ -32,6 +32,9 @@ def population_statistics(
 ) -> dict[str, np.ndarray]:
     """Reduce channel data without removing non-ionising species from the result.
 
+    A neutral channel's events count in its fraction, peak rate and energy, and free no
+    electrons (:func:`solprop.stats.species_statistics`).
+
     Parameters
     ----------
     problem : KernelProblem
@@ -64,6 +67,7 @@ def population_statistics(
     fractions = np.zeros((responses.n_species, transform.n_nodes))
     peaks = np.zeros(responses.n_species)
     potentials = np.zeros(responses.n_species)
+    electrons = np.ones(responses.n_species)
     for channel, fraction, peak in zip(
         responses.population_channels, channel_fractions, channel_peaks, strict=True
     ):
@@ -71,6 +75,7 @@ def population_statistics(
         fractions[index] = fraction
         peaks[index] = np.max(peak)
         potentials[index] = channel.ionisation_potential
+        electrons[index] = channel.electrons_per_event
     if transform.geometry is not None:
         weights = transform.geometry.spatial_weights
     elif transform.mode_averaged:
@@ -84,7 +89,9 @@ def population_statistics(
         raise BackendError(
             "species statistics require physical transverse node weights"
         )
-    result = species_statistics(densities, fractions, peaks, potentials, weights)
+    result = species_statistics(
+        densities, fractions, peaks, potentials, weights, electrons
+    )
     if (
         responses.envelope_plasma is not None
         and len(responses.population_channels) == 1
@@ -120,7 +127,8 @@ def axis_statistics(
     dict
         ``on_axis_electron_density`` and ``on_axis_peak_ionisation_rate``, and their
         species forms in the mixture's order, non-ionising species at zero and the
-        total the sum of the species densities.
+        total the sum of the species densities. A neutral channel frees no electrons;
+        its peak rate is its events'.
 
     Raises
     ------
@@ -150,7 +158,7 @@ def axis_statistics(
         responses.population_channels, channel_fractions, channel_peaks, strict=True
     ):
         index = responses.labels.index(channel.label)
-        electrons[index] = densities[index] * fraction
+        electrons[index] = densities[index] * fraction * channel.electrons_per_event
         peaks[index] = peak
     total = 0.0
     for value in electrons:

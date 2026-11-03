@@ -646,6 +646,8 @@ def _response(response: object) -> str:
         return f"Raman{who}{held}"
     if name in {"PlasmaResponse", "EnvelopePlasmaResponse"}:
         kind = "plasma" if name == "PlasmaResponse" else "envelope plasma"
+        if getattr(response, "electrons_per_event", 1.0) == 0.0:
+            kind = "neutral loss channel"
         gas = getattr(response, "gas", None)
         label = getattr(gas, "name", gas)
         return f"{kind} ({label}), rate {_rate(getattr(response, 'rate', None))}"

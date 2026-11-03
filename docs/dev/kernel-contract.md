@@ -94,7 +94,7 @@ expansion. A
 total-degree expansion is not part of the contract: it failed the joint memory and
 build-cost criterion on the short fixture.
 
-The current version is kernel schema **41**
+The current version is kernel schema **42**
 (`solprop.translate.problem.KERNEL_SCHEMA_VERSION`), and the tables of this document
 describe it. A version bump that adds an optional field
 leaves every problem that does not use it unchanged, `schema_version` itself being the
@@ -937,7 +937,17 @@ never by reading the coefficient arrays. That is what lets the representation ch
 a z table, an expansion in the scalar parameters, a constant — without a backend
 noticing.
 
-Each plasma channel also carries `label`, `density` and `electrons_per_event=1.0`. Dissociation and multiple electrons per event are unsupported. Channel
+Each plasma channel also carries `label`, `density` and `electrons_per_event`, which is
+exactly `1.0` (single ionisation) or, since kernel schema 42, `0.0`: a **neutral channel**, whose
+events deplete the population and pay `ionisation_potential` each through the loss
+current but free no electron, as strong-field dissociation into neutral fragments does. A
+backend forms the free-current weight `rho f (e^2/m_e) electrons_per_event`, reading the
+constant from `PlasmaChannel.free_current_coefficient` (`charge_mass_ratio` times
+`electrons_per_event`, exactly `e^2/m_e` or zero), and counts `rho f electrons_per_event`
+as electrons in the electron-density statistics; the fraction, the peak rate and the
+energy statistics are the channel's events whatever it frees. Multiple electrons per
+event remain unsupported. A one-channel problem's specialised path reads the same
+property, so a lone neutral channel needs no branch either. Channel
 labels select species metadata by name, and rates are identity-checked per channel.
 Kerr coefficients carry their own scalar `density` table: for several components
 it contains `sum rho_s gamma3_s`, with `coefficient=epsilon_0`; one component keeps

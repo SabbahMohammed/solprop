@@ -53,7 +53,11 @@ from solprop.modes.quadrature import RadialRule
 from solprop.modes.slab import PlanarGrid
 from solprop.modes.tabulated import IndexTable
 from solprop.monitor import DEFAULT_BOUNDARY_CHECK, BoundaryCheck
-from solprop.nonlinear.ionisation import IntegrationPolicy, IonisationRate
+from solprop.nonlinear.ionisation import (
+    IntegrationPolicy,
+    IonisationRate,
+    NeutralChannel,
+)
 from solprop.nonlinear.raman import MolecularOptions
 from solprop.nonlinear.tdse import TDSEExecution, TDSEGasResponse
 from solprop.output.schema import Output
@@ -849,7 +853,11 @@ def prop_capillary(  # noqa: PLR0913 - the interface's keyword surface
     temperature: float | ZProfile | None = None,
     kerr: bool = True,
     thg: bool | None = None,
-    plasma: bool | IonisationRate | Mapping[str, bool | IonisationRate] | None = None,
+    plasma: bool
+    | IonisationRate
+    | NeutralChannel
+    | Mapping[str, bool | IonisationRate | NeutralChannel]
+    | None = None,
     preionisation: float | ZProfile | Mapping[str, float | ZProfile] | None = None,
     plasma_integration: IntegrationPolicy | None = None,
     raman: bool | Sequence[str] | Mapping[str, bool | MolecularOptions] | None = None,
@@ -1051,7 +1059,7 @@ def prop_capillary(  # noqa: PLR0913 - the interface's keyword surface
     thg : bool or None, optional
         Include third-harmonic generation in the Kerr term; ``None`` takes
         ``not envelope``.
-    plasma : bool, IonisationRate, Mapping or None, optional
+    plasma : bool, IonisationRate, NeutralChannel, Mapping or None, optional
         Include photoionisation. ``None`` takes ``not envelope``. ``True`` selects
         optmat's recommended rate model of each built-in gas (SEP 3, D1;
         :class:`~solprop.nonlinear.optmat_rates.OptmatRate`, or the model the
@@ -1059,6 +1067,9 @@ def prop_capillary(  # noqa: PLR0913 - the interface's keyword surface
         a mixture; a custom species needs its own rate. A rate object
         is used as given; a mapping selects a rate or switch per component label, and
         omitted labels are off.
+        A :class:`~solprop.nonlinear.ionisation.NeutralChannel` in place of a
+        rate declares a channel whose events free no charge: it keeps the loss
+        current and drops the free-electron current (field grids only).
     preionisation : float, ZProfile, Mapping or None, optional
         Initial ionised fraction in [0, 1], globally or per label: a number, or a
         path along z in m giving the fraction ionised before the pulse arrives at
@@ -1380,7 +1391,11 @@ def prop_waveguide(  # noqa: PLR0913 - the interface's keyword surface
     temperature: float | ZProfile | None = None,
     kerr: bool = True,
     thg: bool | None = None,
-    plasma: bool | IonisationRate | Mapping[str, bool | IonisationRate] | None = None,
+    plasma: bool
+    | IonisationRate
+    | NeutralChannel
+    | Mapping[str, bool | IonisationRate | NeutralChannel]
+    | None = None,
     preionisation: float | ZProfile | Mapping[str, float | ZProfile] | None = None,
     plasma_integration: IntegrationPolicy | None = None,
     raman: bool | Sequence[str] | Mapping[str, bool | MolecularOptions] | None = None,
@@ -1557,7 +1572,7 @@ def prop_waveguide(  # noqa: PLR0913 - the interface's keyword surface
     thg : bool or None, optional
         Include third-harmonic generation in the Kerr term; ``None`` takes
         ``not envelope``.
-    plasma : bool, IonisationRate, Mapping or None, optional
+    plasma : bool, IonisationRate, NeutralChannel, Mapping or None, optional
         Include photoionisation. ``None`` takes ``not envelope``. ``True`` selects
         optmat's recommended rate model of each built-in gas (SEP 3, D1;
         :class:`~solprop.nonlinear.optmat_rates.OptmatRate`, or the model the
@@ -1565,6 +1580,9 @@ def prop_waveguide(  # noqa: PLR0913 - the interface's keyword surface
         a mixture; a custom species needs its own rate. A rate object
         is used as given; a mapping selects a rate or switch per component label, and
         omitted labels are off.
+        A :class:`~solprop.nonlinear.ionisation.NeutralChannel` in place of a
+        rate declares a channel whose events free no charge: it keeps the loss
+        current and drops the free-electron current (field grids only).
     preionisation : float, ZProfile, Mapping or None, optional
         Initial ionised fraction in [0, 1], globally or per label: a number, or a
         path along z in m giving the fraction ionised before the pulse arrives at

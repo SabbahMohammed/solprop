@@ -1248,7 +1248,14 @@ class NativeBackend(StepDriver[_core.State]):
                 )
             on_axis = np.ascontiguousarray(self._on_axis_synthesis(self._modes))
         plasma = self._problem.responses.plasma_coefficients
-        density = 0.0 if plasma is None else float(plasma.density(self._z))
+        # The one channel's electrons per unit fraction: its density times the
+        # electrons each event frees, zero for a neutral channel (kernel schema 42),
+        # which the native statistic multiplies by the largest fraction.
+        density = (
+            0.0
+            if plasma is None
+            else float(plasma.density(self._z)) * plasma.electrons_per_event
+        )
         preionisation = 0.0 if plasma is None else float(plasma.preionisation(self._z))
         taper_profile = self._problem.transform.taper_scale
         taper = 1.0 if taper_profile is None else float(taper_profile(self._z))
@@ -3727,7 +3734,9 @@ def _native_problem(
             if raman is None
             else np.concatenate([term.undamped for term in raman_terms], axis=0)
         ),
-        "charge_mass_ratio": 0.0 if plasma is None else plasma.charge_mass_ratio,
+        # The free current's constant: e^2/m_e times the electrons per event, zero
+        # for a neutral channel (solprop kernel schema 42).
+        "charge_mass_ratio": 0.0 if plasma is None else plasma.free_current_coefficient,
         "ionisation_potential": 0.0 if plasma is None else plasma.ionisation_potential,
         "log_field_min": 0.0 if rate is None else rate.log_field_min,
         "d_log_field": 0.0 if rate is None else rate.d_log_field,
@@ -4045,7 +4054,8 @@ def _channel_payload(problem: KernelProblem) -> dict[str, object]:
                 rate.rate_max,
                 rate.coefficients.shape[1],
                 offset,
-                channel.charge_mass_ratio,
+                # Zero for a neutral channel (solprop kernel schema 42).
+                channel.free_current_coefficient,
                 channel.ionisation_potential,
             ]
         )

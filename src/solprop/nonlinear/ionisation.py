@@ -48,14 +48,17 @@ from solprop.physdata.species import (
 
 __all__ = [
     "DT_RTOL",
+    "ELECTRONS_PER_EVENT",
     "MAX_RATE",
     "EvaluableRate",
     "IntegrationPolicy",
     "IonisationRate",
+    "NeutralChannel",
     "RateConvention",
     "RunningIntegral",
     "barrier_suppression_field",
     "bind_rate_energy",
+    "check_electrons_per_event",
     "ionisation_fraction",
     "keldysh",
     "rate_convention",
@@ -173,6 +176,102 @@ class IonisationRate(Protocol):
             Rate per atom or molecule in s^-1, with the shape of ``field_amplitude``.
         """
         ...
+
+
+ELECTRONS_PER_EVENT: Final[tuple[float, ...]] = (0.0, 1.0)
+"""The free electrons one event of a field plasma channel may release.
+
+``1.0`` is single ionisation, the default of every channel. ``0.0`` is a **neutral
+channel** (:class:`NeutralChannel`): an event that removes a molecule from its
+population and costs the field its energy per event, but frees no charge, as
+strong-field dissociation into neutral fragments does. A channel that released two or
+more electrons per event would need a population model of its own (sequential charge
+states), so no other value is admitted.
+"""
+
+
+def check_electrons_per_event(value: float) -> float:
+    """Return the electrons one event releases, refused unless it is admitted.
+
+    Parameters
+    ----------
+    value : float
+        Electrons released per event, dimensionless.
+
+    Returns
+    -------
+    float
+        `value` as a float, one of :data:`ELECTRONS_PER_EVENT`.
+
+    Raises
+    ------
+    MaterialError
+        If `value` is not ``0.0`` (a neutral channel) or ``1.0`` (single ionisation).
+
+    Examples
+    --------
+    >>> from solprop.nonlinear.ionisation import check_electrons_per_event
+    >>> check_electrons_per_event(0.0)
+    0.0
+    """
+    number = float(value)
+    if number not in ELECTRONS_PER_EVENT:
+        msg = (
+            f"electrons_per_event must be 0.0 (a neutral channel, which frees no "
+            f"charge) or 1.0 (single ionisation), got {value!r}"
+        )
+        raise MaterialError(msg)
+    return number
+
+
+@dataclasses.dataclass(frozen=True)
+class NeutralChannel:
+    """Declare a field-driven loss channel whose events release no charge.
+
+    A neutral channel depletes its population at the rate ``W(|E|)``, with the fraction
+    ``f = 1 - (1 - f_0) exp(-int W dt)``, and the field pays the energy per event for
+    each event through the same loss current ``U W (1 - f) E / |E|^2`` as an ionisation
+    -- but no electron is freed: there is no free-electron (Drude) current, no plasma
+    contribution to the refractive index and no contribution to the electron density.
+    Strong-field dissociation of a molecule into neutral fragments is the case it is
+    written for (``docs/guide/media/ionisation.md``, "Neutral loss channels").
+
+    Give it where a rate goes in a ``plasma`` selection, per label:
+    ``plasma={"N2": True, "O2": True, "O3": NeutralChannel(rate)}``. It builds a
+    :class:`~solprop.nonlinear.responses.PlasmaResponse` with
+    ``electrons_per_event=0.0``; a response may also be given that value directly. The
+    energy per event is found exactly as for an ionising channel: the rate's own
+    (``plasma_energy``, as an :class:`~solprop.nonlinear.optmat_rates.OptmatRate`
+    declares it), or else the species' ionisation data, which for a neutral channel
+    holds the barrier the event pays. The channel is defined on a field grid only;
+    envelope plasma refuses it.
+
+    Attributes
+    ----------
+    rate : EvaluableRate
+        The event rate per molecule in s^-1 against the field amplitude in V/m. A
+        propagation tabulates it, so it must satisfy :class:`IonisationRate` (an
+        optmat model through ``OptmatRate``, or a caller's rate) or be a
+        :class:`~solprop.translate.ionisation.RateTable` already; it must be exactly
+        zero at zero field.
+
+    Examples
+    --------
+    >>> from optmat.gas.molecular_ionisation_rates import MolecularRateModel
+    >>> from solprop.constants import E_CHARGE
+    >>> from solprop.nonlinear.ionisation import NeutralChannel
+    >>> from solprop.nonlinear.optmat_rates import OptmatRate
+    >>> barrier = 16.42 * E_CHARGE
+    >>> model = MolecularRateModel.from_parameters(
+    ...     "O3", 800e-9, form="adk", ionization_energy=barrier, electrons=2.0,
+    ...     citation="ADK at an effective dissociation barrier",
+    ... )
+    >>> channel = NeutralChannel(OptmatRate(model))
+    >>> float(channel.rate(0.0))
+    0.0
+    """
+
+    rate: EvaluableRate
 
 
 def rate_convention(rate: EvaluableRate) -> RateConvention:

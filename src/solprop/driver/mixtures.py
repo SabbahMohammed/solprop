@@ -13,7 +13,11 @@ from jaxtyping import Float
 from solprop.constants import ROOM_TEMPERATURE
 from solprop.exceptions import DriverError
 from solprop.gasflow import VacuumEnd
-from solprop.nonlinear.ionisation import IntegrationPolicy, IonisationRate
+from solprop.nonlinear.ionisation import (
+    IntegrationPolicy,
+    IonisationRate,
+    NeutralChannel,
+)
 from solprop.nonlinear.mixtures import responses_for
 from solprop.nonlinear.optmat_rates import bind_reference_field
 from solprop.nonlinear.raman import MolecularOptions
@@ -48,7 +52,7 @@ class ResponseSelection:
         Whether to include instantaneous electronic responses.
     thg : bool
         Whether to retain third harmonics on the field grid.
-    plasma : bool, IonisationRate or Mapping
+    plasma : bool, IonisationRate, NeutralChannel or Mapping
         Global or per-label plasma selection.
     raman : bool, sequence of str or Mapping
         Global or per-label Raman term selection.
@@ -74,7 +78,12 @@ class ResponseSelection:
 
     kerr: bool
     thg: bool
-    plasma: bool | IonisationRate | Mapping[str, bool | IonisationRate]
+    plasma: (
+        bool
+        | IonisationRate
+        | NeutralChannel
+        | Mapping[str, bool | IonisationRate | NeutralChannel]
+    )
     raman: bool | Sequence[str] | Mapping[str, bool | MolecularOptions]
     wavelength: float
     envelope: bool = False

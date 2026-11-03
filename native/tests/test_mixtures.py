@@ -85,6 +85,7 @@ def test_species_statistics_preserve_an_inert_component_and_close(
         "offset",
         "interval",
         "coefficients",
+        "negative_charge",
     ],
 )
 def test_native_channel_payload_refusals(
@@ -108,6 +109,9 @@ def test_native_channel_payload_refusals(
             parameters[1, 6] += 1
         elif damage == "interval":
             parameters[1, 5] = -1
+        elif damage == "negative_charge":
+            # Zero is a neutral channel (kernel schema 42); below zero is no channel.
+            parameters[1, 7] = -1.0
         else:
             payload["channel_coefficients"] = np.empty(0)
         payload["channel_parameters"] = parameters
@@ -139,5 +143,27 @@ def test_native_statistics_refuse_channel_preionisation_shape(
                 1.0,
                 np.array([0.0, 1.01]),
             )
+    finally:
+        backend.close()
+
+
+def test_native_payload_admits_a_neutral_channel(
+    mixture_case: tuple[KernelProblem, FieldGrid],
+) -> None:
+    # Kernel schema 42: a channel's free-current constant (column 7) and the one
+    # channel's problem-level constant may be zero, a neutral channel's.
+    problem, grid = mixture_case
+    backend = NativeBackend(problem, grid=grid)
+    try:
+        payload = _native_problem(
+            problem,
+            backend._terms,  # pyright: ignore[reportPrivateUsage] - fixed payload
+        )
+        parameters = np.array(payload["channel_parameters"], dtype=float, copy=True)
+        parameters[1, 7] = 0.0
+        payload["channel_parameters"] = parameters
+        payload["charge_mass_ratio"] = 0.0
+        state = _core.State(payload)
+        state.close()
     finally:
         backend.close()

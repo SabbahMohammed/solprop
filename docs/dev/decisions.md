@@ -461,7 +461,9 @@ Withdrawn (development-process record, not a design decision).
   rebuilding what does not depend on it; there is no mixture equation of state (Dalton
   with real-gas partials, declared); no Raman constant or collision law is invented where
   the data are missing; dissociation channels are a later value of `electrons_per_event`,
-  not a schema change.
+  not a new field. (Amended at kernel schema 42, which admits `0.0`, the neutral channel:
+  no field moved, but the version rose, because a compiled backend that ignored the
+  weight would have run the new value as an ionisation.)
 
 ## ADR-028 — withdrawn
 

@@ -61,6 +61,7 @@ from solprop.grid import TimeGrid
 from solprop.modes import base as modes_base
 from solprop.modes.protocol import Mode
 from solprop.modes.slab import PlanarGrid
+from solprop.nonlinear.ionisation import ELECTRONS_PER_EVENT
 from solprop.output.schema import SavedPlane, SimulationKind
 from solprop.profiles import ZProfile
 from solprop.spatial import (
@@ -127,24 +128,34 @@ def species_statistics(
     peak_rates: Float[np.ndarray, " n_peaks"],
     potentials: Float[np.ndarray, " n_potentials"],
     weights: Float[np.ndarray, " n_weights"],
+    electrons_per_event: Float[np.ndarray, " n_electrons"] | None = None,
 ) -> dict[str, np.ndarray]:
     """Reduce species populations at the node of largest total electron density.
+
+    A species' events and its electrons are distinct: the fraction, the peak rate and
+    the energy inventory count every event of its channel, and the electron densities
+    count ``electrons_per_event`` electrons for each, so a neutral channel (none per
+    event, ``docs/guide/media/ionisation.md``) reports its fraction and the energy its
+    events paid but no electrons.
 
     Parameters
     ----------
     densities : numpy.ndarray
         Component number densities in m^-3, in mixture order.
     fractions : numpy.ndarray
-        Final ionised fractions at each node, shape (n_species, n_nodes).
-        Components without an ionisation channel have zero entries.
+        Final fractions that have undergone their channel's event at each node,
+        shape (n_species, n_nodes). Components without a channel have zero entries.
     peak_rates : numpy.ndarray
         Largest rate over all nodes per species in s^-1; cycle-averaged on
         envelope grids.
     potentials : numpy.ndarray
-        Ionisation potentials in J, zero for components without channels.
+        Energies per event in J, zero for components without channels.
     weights : numpy.ndarray
         Physical transverse quadrature weights in m². The mode-averaged case uses
         its effective area as its single weight.
+    electrons_per_event : numpy.ndarray or None, optional
+        Free electrons each event of a species releases, ``1.0`` or ``0.0`` (a
+        neutral channel), shape (n_species,); ``None`` is one for every species.
 
     Returns
     -------
@@ -157,13 +168,20 @@ def species_statistics(
     Raises
     ------
     OutputError
-        If a population, rate, potential or quadrature weight is outside its domain.
+        If a population, rate, potential, quadrature weight or electron count is
+        outside its domain.
     """
     expected = (len(densities), len(weights))
+    electrons_per_event = (
+        np.ones_like(densities)
+        if electrons_per_event is None
+        else np.asarray(electrons_per_event, dtype=np.float64)
+    )
     if (
         fractions.shape != expected
         or peak_rates.shape != densities.shape
         or potentials.shape != densities.shape
+        or electrons_per_event.shape != densities.shape
     ):
         raise OutputError(
             "species statistics require matching species and node extents; "
@@ -180,18 +198,21 @@ def species_statistics(
             for v in (densities, fractions, peak_rates, potentials, weights)
         )
         or np.any(fractions > 1)
+        or not np.all(np.isin(electrons_per_event, ELECTRONS_PER_EVENT))
     ):
         raise OutputError(
-            "species statistics require finite non-negative populations "
-            "and fractions in [0, 1]"
+            "species statistics require finite non-negative populations, "
+            "fractions in [0, 1] and zero or one electron per event"
         )
-    electrons = densities[:, None] * fractions
+    events = densities[:, None] * fractions
+    # A product with one is exact, so an ionising species' electrons are its events.
+    electrons = events * electrons_per_event[:, None]
     total = np.zeros(fractions.shape[1])
     for row in electrons:
         total += row
     densest = int(np.argmax(total))
     energy = np.zeros(len(densities))
-    for index, (row, potential) in enumerate(zip(electrons, potentials, strict=True)):
+    for index, (row, potential) in enumerate(zip(events, potentials, strict=True)):
         for population, weight in zip(row, weights, strict=True):
             energy[index] += weight * population * potential
     return {

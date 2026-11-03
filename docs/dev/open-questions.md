@@ -87,13 +87,16 @@ pressure-gradient floor in bar. Beside a scalar pressure or a supplied `ZProfile
 accepted and ignored (`_pressure_path` in `solprop/physdata/mixtures.py`). Open: refuse
 it by name there, or apply it to a supplied profile.
 
-**A reserved electrons-per-event weight.** The compiled plasma channels
+**More than one electron per event.** The compiled plasma channels
 (`PlasmaChannel` in `solprop/translate/responses.py`, `EnvelopePlasmaChannel` in
-`solprop/translate/envelope_plasma.py`) carry `electrons_per_event`, and the reference
-backend's field-plasma current multiplies by it, but `numba_cpu` and `native` do not carry
-it. Validation pins it to 1, so the backends agree. Open: remove the field, or carry it
-through the compiled backends with a test, for a model that releases more than one
-electron per event.
+`solprop/translate/envelope_plasma.py`) carry `electrons_per_event`. Since kernel schema 42
+a field channel admits `0.0`, a neutral channel, beside `1.0`, and every backend that
+runs it reads the free current's constant from `PlasmaChannel.free_current_coefficient`
+and weighs the electron densities by the electrons per event; an envelope channel stays
+pinned to one. Open:
+whether a model that releases two or more electrons per event (sequential charge states)
+is wanted, which needs a population model of its own rather than another value of this
+weight.
 
 ## Numerical methods
 

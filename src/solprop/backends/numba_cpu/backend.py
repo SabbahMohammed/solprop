@@ -1029,7 +1029,9 @@ class NumbaCpuBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
         )
         self._channel_scalars = np.zeros((4, self._spec.n_channels))
         for index, channel in enumerate(problem.responses.plasma_channels):
-            self._channel_scalars[0, index] = channel.charge_mass_ratio
+            # The free current's constant per channel: e^2/m_e times the electrons
+            # per event, zero for a neutral channel (kernel schema 42).
+            self._channel_scalars[0, index] = channel.free_current_coefficient
             self._channel_scalars[1, index] = channel.ionisation_potential
         self._channel_scratch = np.zeros(
             (
@@ -2481,7 +2483,7 @@ class NumbaCpuBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
             kerr.harmonic_factor if kerr is not None else 0.0,
             self._channel_scalars[0]
             if multiple
-            else plasma.charge_mass_ratio
+            else plasma.free_current_coefficient
             if plasma is not None
             else 0.0,
             self._channel_scalars[1]
@@ -2548,7 +2550,7 @@ class NumbaCpuBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
             plasma = self._problem.responses.plasma_coefficients
             assert plasma is not None
             constants = (
-                plasma.charge_mass_ratio,
+                plasma.free_current_coefficient,
                 plasma.ionisation_potential,
                 density,
                 preionisation,
@@ -4562,9 +4564,10 @@ class NumbaCpuBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
         else:
             fractions, rates = scanned[0][0], scanned[1][0]
         # Both are read at the node of largest ionised fraction, which is the
-        # reference's choice.
+        # reference's choice; a neutral channel frees no electrons.
         densest = int(np.argmax(fractions))
-        density = float(plasma.density(self._z)) * float(fractions[densest])
+        electrons = float(plasma.density(self._z)) * plasma.electrons_per_event
+        density = electrons * float(fractions[densest])
         return np.asarray(density), np.asarray(float(rates[densest]))
 
     def _ionised_nodes(

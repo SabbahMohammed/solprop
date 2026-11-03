@@ -485,6 +485,9 @@ struct Problem {
   double raman_epsilon0{};
   std::vector<double> raman_undamped;
   std::vector<double> raman_tensor_weights;
+  // The free current's constant, e^2/m_e times the electrons each event frees:
+  // zero for a neutral channel (solprop kernel schema 42), whose events pay
+  // ionisation_potential through the loss current and free no charge.
   double charge_mass_ratio{};
   double ionisation_potential{};
   double log_field_min{};
@@ -508,7 +511,9 @@ struct Problem {
     return plasma_taps.empty() ? 0 : plasma_taps.size() - 1;
   }
   // Channel-major rows: log_min, d_log, field_min, field_max, rate_max,
-  // interval count, coefficient offset, charge/mass ratio, ionisation potential.
+  // interval count, coefficient offset, the free current's constant (e^2/m_e
+  // times the electrons per event, zero for a neutral channel, schema 42) and the
+  // energy per event.
   std::vector<double> channel_parameters, channel_coefficients;
   std::size_t n_raman_components{1};
   std::vector<double> raman_row_component, raman_component_fraction;

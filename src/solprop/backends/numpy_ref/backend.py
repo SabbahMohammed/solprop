@@ -905,7 +905,9 @@ class NumpyRefBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
         field is not re-synthesised there.
 
         The electron density is ``density(z)`` times the fraction at the **end** of the
-        window: what the pulse leaves behind, not what it reaches in passing.
+        window times the channel's electrons per event: what the pulse leaves behind,
+        not what it reaches in passing, and zero for a neutral channel, whose events
+        free no electron (the peak rate is still its events' rate).
 
         Parameters
         ----------
@@ -967,9 +969,8 @@ class NumpyRefBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
                 if fraction[densest, -1] > largest:
                     largest = float(fraction[densest, -1])
                     peak = float(np.max(rate[densest]))
-            return np.asarray(float(plasma.density(self._z)) * largest), np.asarray(
-                peak
-            )
+            electrons = float(plasma.density(self._z)) * plasma.electrons_per_event
+            return np.asarray(electrons * largest), np.asarray(peak)
         nodes = self._nodes_at(field)
         rate = passes.ionisation_rate(nodes, plasma.rate)
         fraction, _ = passes.plasma_scan(
@@ -981,7 +982,8 @@ class NumpyRefBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
             integral=responses.plasma_integral,
         )
         densest = int(np.argmax(fraction[:, -1]))
-        density = float(plasma.density(self._z)) * float(fraction[densest, -1])
+        electrons = float(plasma.density(self._z)) * plasma.electrons_per_event
+        density = electrons * float(fraction[densest, -1])
         return np.asarray(density), np.asarray(float(np.max(rate[densest])))
 
     def _peak_intensity(

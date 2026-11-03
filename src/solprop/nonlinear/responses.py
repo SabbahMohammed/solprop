@@ -34,6 +34,7 @@ from solprop.nonlinear.ionisation import (
     IntegrationPolicy,
     RunningIntegral,
     bind_rate_energy,
+    check_electrons_per_event,
     ionisation_fraction,
 )
 from solprop.physdata import Gas, as_gas, ionisation_potential
@@ -1114,6 +1115,16 @@ class PlasmaResponse:
     :meth:`evaluate` and :meth:`ionised_fraction` refuse a response that still carries
     one.
 
+    ``electrons_per_event`` weighs the free-electron current by the charge each event
+    releases: one for an ionisation, the default, and zero for a **neutral channel**
+    (:class:`~solprop.nonlinear.ionisation.NeutralChannel`), whose events -- the
+    strong-field dissociation of a molecule into neutral fragments -- deplete the
+    population and pay their energy through the loss current but free no electron, so
+    the response is the loss current alone: no Drude current, no plasma index and no
+    electron density. The fraction, the rate and the energy per event are the
+    channel's events in either case (``docs/guide/media/ionisation.md``, "Neutral loss
+    channels").
+
     Attributes
     ----------
     gas : Gas or str or Species
@@ -1135,14 +1146,20 @@ class PlasmaResponse:
     integration : {'band', 'trapezoid'}, optional
         The running-integral rule of the column (SEP 18): the band rule, the default,
         or the plain cumulative trapezoid.
+    electrons_per_event : float, optional
+        Free electrons each event releases: ``1.0``, single ionisation, the default;
+        or ``0.0``, a neutral channel, which keeps the loss current and drops the
+        free-electron current
+        (:data:`~solprop.nonlinear.ionisation.ELECTRONS_PER_EVENT`).
 
     Raises
     ------
     MaterialError
         If the gas is unknown or has no ionisation potential, the pre-ionised fraction
         is neither a number nor a path or leaves ``[0, 1]``, the rate is not zero at
-        zero field, it carries an energy per event for another species, or
-        ``integration`` is not a known rule.
+        zero field, it carries an energy per event for another species,
+        ``integration`` is not a known rule, or ``electrons_per_event`` is neither
+        ``0.0`` nor ``1.0``.
 
     Examples
     --------
@@ -1166,6 +1183,17 @@ class PlasmaResponse:
     ... )
     >>> f"{fraction[-1]:.4f}"
     '0.3209'
+
+    A neutral channel at the same rate removes the same fraction, and its polarisation
+    is the loss current's alone:
+
+    >>> neutral = PlasmaResponse(
+    ...     "Ar", OptmatRate("Ar", 800e-9), electrons_per_event=0.0
+    ... )
+    >>> bool(neutral.ionised_fraction(
+    ...     field[None, :], dt=grid.dt_fine, kind="field", integral=rule
+    ... )[-1] == fraction[-1])
+    True
     """
 
     gas: Gas | str | Species
@@ -1174,6 +1202,7 @@ class PlasmaResponse:
     preionisation: float | ZProfile = 0.0
     species: str | None = None
     integration: IntegrationPolicy = "band"
+    electrons_per_event: float = 1.0
 
     def __post_init__(self) -> None:
         """Normalise the species and reject settings that cannot give a polarisation.
@@ -1184,13 +1213,19 @@ class PlasmaResponse:
             If the gas is unknown or has no ionisation potential, the pre-ionised
             fraction is neither a number nor a path or leaves ``[0, 1]``, the rate
             is not zero at zero field, it carries an energy per event for another
-            species, or the integration rule is unknown.
+            species, the integration rule is unknown, or the electrons per event are
+            neither none nor one.
         """
         # The annotation refuses another rule first wherever the annotations are
         # checked at run time, as in the test suite.
         if self.integration not in {"band", "trapezoid"}:  # pragma: no cover
             msg = f"integration must be 'band' or 'trapezoid', got {self.integration!r}"
             raise MaterialError(msg)
+        object.__setattr__(
+            self,
+            "electrons_per_event",
+            check_electrons_per_event(self.electrons_per_event),
+        )
         if not isinstance(self.gas, Species):
             object.__setattr__(self, "gas", as_gas(self.gas))
         # A rate that carries its own energy per event sets the energy the loss pays
@@ -1213,13 +1248,35 @@ class PlasmaResponse:
             raise MaterialError(msg)
 
     @property
+    def neutral(self) -> bool:
+        """Return whether the events release no charge.
+
+        Returns
+        -------
+        bool
+            ``True`` for a neutral channel (``electrons_per_event == 0``), whose
+            response is the loss current alone.
+
+        Examples
+        --------
+        >>> from solprop.nonlinear.optmat_rates import OptmatRate
+        >>> from solprop.nonlinear.responses import PlasmaResponse
+        >>> PlasmaResponse("Ar", OptmatRate("Ar", 800e-9)).neutral
+        False
+        """
+        return self.electrons_per_event == 0.0
+
+    @property
     def potential(self) -> float:
-        """Return the ionisation potential without inventing custom species data.
+        """Return the energy per event without inventing custom species data.
+
+        For an ionising channel this is the ionisation potential; for a neutral
+        channel, the barrier its event pays, carried in the same place.
 
         Returns
         -------
         float
-            First ionisation potential in J.
+            Energy per event in J.
 
         Raises
         ------
@@ -1268,10 +1325,11 @@ class PlasmaResponse:
     ) -> Float[np.ndarray, " n_to"]:
         """Return the fraction of atoms ionised, sample by sample.
 
-        Multiply by the density for the electron density, which is what a run reports as
-        a statistic. The rate is taken on the **magnitude** of the field, so an
-        elliptically polarised pulse ionises according to how hard it pulls, not
-        according to one component.
+        Multiply by the density and the electrons per event for the electron density,
+        which is what a run reports as a statistic; for a neutral channel it is the
+        fraction that has undergone the event, and frees no electron. The rate is taken
+        on the **magnitude** of the field, so an elliptically polarised pulse ionises
+        according to how hard it pulls, not according to one component.
 
         Parameters
         ----------
@@ -1393,7 +1451,11 @@ class PlasmaResponse:
 
         rule = self._rule(integral, dt)
         magnitude, rate, fraction = self._fraction(values, dt, rule)
-        current = rule.integrate(fraction * CHARGE_MASS_RATIO * values, dt)
+        # The charge each event frees weighs the free current: exactly e^2/m_e for an
+        # ionisation (a product with 1.0 is exact) and zero for a neutral channel,
+        # whose polarisation is then the loss current's alone.
+        free = CHARGE_MASS_RATIO * self.electrons_per_event
+        current = rule.integrate(fraction * free * values, dt)
         current = current + self._loss(values, magnitude, rate, fraction)
         return density * rule.integrate(current, dt)
 

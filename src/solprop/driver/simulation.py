@@ -195,7 +195,11 @@ from solprop.nonlinear.gnlse import (
     attenuation_from_db,
     problem_from,
 )
-from solprop.nonlinear.ionisation import IntegrationPolicy, IonisationRate
+from solprop.nonlinear.ionisation import (
+    IntegrationPolicy,
+    IonisationRate,
+    NeutralChannel,
+)
 from solprop.nonlinear.mixtures import electronic_response, responses_for
 from solprop.nonlinear.optmat_raman import mixture_raman, raman_status
 from solprop.nonlinear.optmat_rates import (
@@ -4765,7 +4769,8 @@ class Simulation(Displayed):
         thg: bool | None = None,
         plasma: bool
         | IonisationRate
-        | Mapping[str, bool | IonisationRate]
+        | NeutralChannel
+        | Mapping[str, bool | IonisationRate | NeutralChannel]
         | None = None,
         preionisation: float | ZProfile | Mapping[str, float | ZProfile] | None = None,
         plasma_integration: IntegrationPolicy | None = None,
@@ -4970,7 +4975,7 @@ class Simulation(Displayed):
         thg : bool or None, optional
             Include third-harmonic generation in the Kerr term; ``None`` takes
             ``not envelope``.
-        plasma : bool, IonisationRate, Mapping or None, optional
+        plasma : bool, IonisationRate, NeutralChannel, Mapping or None, optional
             Include photoionisation. ``None`` takes ``not envelope``. ``True`` selects
             optmat's recommended rate model of each built-in gas (SEP 3, D1;
             :class:`~solprop.nonlinear.optmat_rates.OptmatRate`, or the model the
@@ -4978,6 +4983,9 @@ class Simulation(Displayed):
             component of a mixture; a custom species needs its own rate. A
             rate object is used as given; a mapping selects a rate or switch per
             component label, and omitted labels are off.
+            A :class:`~solprop.nonlinear.ionisation.NeutralChannel` in place of a
+            rate declares a channel whose events free no charge: it keeps the loss
+            current and drops the free-electron current (field grids only).
         preionisation : float, ZProfile, Mapping or None, optional
             Initial ionised fraction in [0, 1], globally or per label: a number, or a
             path along z in m giving the fraction ionised before the pulse arrives at
@@ -5250,7 +5258,8 @@ class Simulation(Displayed):
         thg: bool | None = None,
         plasma: bool
         | IonisationRate
-        | Mapping[str, bool | IonisationRate]
+        | NeutralChannel
+        | Mapping[str, bool | IonisationRate | NeutralChannel]
         | None = None,
         preionisation: float | ZProfile | Mapping[str, float | ZProfile] | None = None,
         plasma_integration: IntegrationPolicy | None = None,
@@ -5487,7 +5496,7 @@ class Simulation(Displayed):
         thg : bool or None, optional
             Include third-harmonic generation in the Kerr term; ``None`` takes
             ``not envelope``.
-        plasma : bool, IonisationRate, Mapping or None, optional
+        plasma : bool, IonisationRate, NeutralChannel, Mapping or None, optional
             Include photoionisation. ``None`` takes ``not envelope``. ``True`` selects
             optmat's recommended rate model of each built-in gas (SEP 3, D1;
             :class:`~solprop.nonlinear.optmat_rates.OptmatRate`, or the model the
@@ -5495,6 +5504,9 @@ class Simulation(Displayed):
             component of a mixture; a custom species needs its own rate. A
             rate object is used as given; a mapping selects a rate or switch per
             component label, and omitted labels are off.
+            A :class:`~solprop.nonlinear.ionisation.NeutralChannel` in place of a
+            rate declares a channel whose events free no charge: it keeps the loss
+            current and drops the free-electron current (field grids only).
         preionisation : float, ZProfile, Mapping or None, optional
             Initial ionised fraction in [0, 1], globally or per label: a number, or a
             path along z in m giving the fraction ionised before the pulse arrives at
@@ -6167,7 +6179,8 @@ class Simulation(Displayed):
         thg: bool | None = None,
         plasma: bool
         | IonisationRate
-        | Mapping[str, bool | IonisationRate]
+        | NeutralChannel
+        | Mapping[str, bool | IonisationRate | NeutralChannel]
         | None = None,
         preionisation: float | ZProfile | Mapping[str, float | ZProfile] | None = None,
         plasma_integration: IntegrationPolicy | None = None,
@@ -6365,7 +6378,7 @@ class Simulation(Displayed):
         thg : bool or None, optional
             Include third-harmonic generation in the Kerr term; ``None`` takes
             ``not envelope``.
-        plasma : bool, IonisationRate, Mapping or None, optional
+        plasma : bool, IonisationRate, NeutralChannel, Mapping or None, optional
             Include photoionisation. ``None`` takes ``not envelope``. ``True`` selects
             optmat's recommended rate model of each built-in gas (SEP 3, D1;
             :class:`~solprop.nonlinear.optmat_rates.OptmatRate`, or the model the
@@ -6373,6 +6386,9 @@ class Simulation(Displayed):
             component of a mixture; a custom species needs its own rate. A
             rate object is used as given; a mapping selects a rate or switch per
             component label, and omitted labels are off.
+            A :class:`~solprop.nonlinear.ionisation.NeutralChannel` in place of a
+            rate declares a channel whose events free no charge: it keeps the loss
+            current and drops the free-electron current (field grids only).
         preionisation : float, ZProfile, Mapping or None, optional
             Initial ionised fraction in [0, 1], globally or per label: a number, or a
             path along z in m giving the fraction ionised before the pulse arrives at
@@ -10468,7 +10484,7 @@ def _capillary_responses(  # noqa: PLR0913 - the switches of the responses, one 
     material: Species,
     *,
     kerr: bool,
-    plasma: bool | IonisationRate,
+    plasma: bool | IonisationRate | NeutralChannel,
     preionisation: float | ZProfile,
     integration: IntegrationPolicy | None,
     wavelength: float,
@@ -10490,8 +10506,9 @@ def _capillary_responses(  # noqa: PLR0913 - the switches of the responses, one 
         selection, so the material manifest lists only the models that acted (Q45).
     kerr : bool
         Include the Kerr response.
-    plasma : bool or IonisationRate
-        Include photoionisation, and with which rate.
+    plasma : bool, IonisationRate or NeutralChannel
+        Include photoionisation, and with which rate; a neutral channel's events
+        free no charge.
     preionisation : float or ZProfile
         Fraction already ionised before the pulse, a number or a path along z in m.
     integration : {'band', 'trapezoid'} or None
@@ -10517,7 +10534,8 @@ def _capillary_responses(  # noqa: PLR0913 - the switches of the responses, one 
     Raises
     ------
     DriverError
-        If a run is asked for with no nonlinearity at all.
+        If a run is asked for with no nonlinearity at all, or a neutral channel on an
+        envelope grid.
     """
     responses: list[object] = []
     if kerr:
@@ -10526,7 +10544,16 @@ def _capillary_responses(  # noqa: PLR0913 - the switches of the responses, one 
         assert electronic is not None
         responses.append(electronic)
     if plasma is not False:
-        rate = _ionisation_rate(gas, plasma, wavelength, selection)
+        if isinstance(plasma, NeutralChannel):
+            if envelope:
+                msg = (
+                    "a neutral channel is defined on a field grid only; envelope "
+                    "plasma has no neutral form"
+                )
+                raise DriverError(msg, parameter=("plasma", "envelope"))
+            rate, electrons = plasma.rate, 0.0
+        else:
+            rate, electrons = _ionisation_rate(gas, plasma, wavelength, selection), 1.0
         if envelope:
             responses.append(
                 EnvelopePlasmaResponse(material, rate, preionisation=preionisation)
@@ -10536,7 +10563,13 @@ def _capillary_responses(  # noqa: PLR0913 - the switches of the responses, one 
                 {} if integration is None else {"integration": integration}
             )
             responses.append(
-                PlasmaResponse(material, rate, preionisation=preionisation, **chosen)
+                PlasmaResponse(
+                    material,
+                    rate,
+                    preionisation=preionisation,
+                    electrons_per_event=electrons,
+                    **chosen,
+                )
             )
     if not responses:
         msg = (

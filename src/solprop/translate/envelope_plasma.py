@@ -275,6 +275,22 @@ class EnvelopePlasmaChannel:
         """
         return self.cycle.rate
 
+    @property
+    def free_current_coefficient(self) -> float:
+        """Return the coefficient of the Drude drive per unit fraction, C^2/kg.
+
+        The field channel's property of the same name
+        (:attr:`solprop.translate.responses.PlasmaChannel.free_current_coefficient`):
+        ``charge_mass_ratio`` times the electrons per event, which an envelope channel
+        fixes at one, so it is ``charge_mass_ratio`` exactly.
+
+        Returns
+        -------
+        float
+            The coefficient, positive.
+        """
+        return self.charge_mass_ratio * self.electrons_per_event
+
 
 @dataclass(frozen=True, eq=False)
 class EnvelopeSourceFactors:

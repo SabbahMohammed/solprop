@@ -244,6 +244,11 @@ draw again. Schema 41 (solprop SEP 40) adds ``KernelProblem.transverse``, the re
 transverse boundary, and ``reads_transverse_edge``: this backend carries the safety ramp
 and a requested collar in its operators, reads the transverse edge on the host from its
 state, and its Adams march holds its steps to the edge's next read and stops there.
+Schema 42 admits a neutral plasma channel (``PlasmaChannel.electrons_per_event`` of
+zero): this backend packs each channel's free-current constant from
+``free_current_coefficient``, zero for such a channel, and its kernels admit a zero
+there, so a neutral channel keeps its loss current and adds no free current; the
+one-channel electron-density statistic is given the electrons per unit fraction.
 
 solprop freezes this surface under its ``KERNEL_SCHEMA_VERSION`` (the test in its
 ``tests/backends/test_driver.py``); :func:`check_build` looks each member up so a

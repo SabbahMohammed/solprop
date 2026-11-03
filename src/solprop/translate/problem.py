@@ -202,7 +202,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-KERNEL_SCHEMA_VERSION = 41
+KERNEL_SCHEMA_VERSION = 42
 """Version of the kernel contract this module implements.
 
 Incremented on every change to the field list of ``docs/dev/kernel-contract.md``. A
@@ -472,6 +472,18 @@ ramp, is admitted on the radial kind, where it rides the dense operator, and on 
 hybrid planar kind per ``(p, k_y)`` column, which the slab element now takes as its
 ``transverse_rate``. The geometry's ``absorber_rate`` is the design's collar, zero
 without one, and an adaptive run's ``dz_max`` is held to the collar's crossing limit.
+
+Version 42 admits **neutral plasma channels**: ``PlasmaChannel.electrons_per_event``,
+pinned to ``1.0`` since version 6, may now also be ``0.0``, a channel whose events
+deplete their population and pay their energy through the loss current but free no
+electron (strong-field dissociation into neutral fragments). Its free-electron current
+and its share of the electron density are zero; its fraction, rate and energy per event
+are reported as an ionising channel's are. No field, bundle or ``StepDriver`` signature
+moves, but the meaning of a field a backend may have ignored does: a backend that
+multiplies the free current by ``e^2/m_e`` alone would run a neutral channel as an
+ionising one, so the version is raised and a stale compiled backend is refused by it.
+A compiled backend reads the free current's constant from
+``PlasmaChannel.free_current_coefficient``.
 """
 
 DEFAULT_COMPONENTS = ("x",)

@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 from jaxtyping import Float
@@ -19,7 +19,13 @@ from scipy.integrate import quad
 
 from solprop.exceptions import MaterialError, RamanTemperatureWarning
 from solprop.nonlinear.envelope_plasma import EnvelopePlasmaResponse
-from solprop.nonlinear.ionisation import IntegrationPolicy, IonisationRate, rate_species
+from solprop.nonlinear.ionisation import (
+    EvaluableRate,
+    IntegrationPolicy,
+    IonisationRate,
+    NeutralChannel,
+    rate_species,
+)
 from solprop.nonlinear.optmat_raman import mixture_raman
 from solprop.nonlinear.optmat_rates import selected_rate
 from solprop.nonlinear.raman import (
@@ -543,12 +549,62 @@ def electronic_response(
     )
 
 
+def _selected_channel(
+    selected: Literal[True] | IonisationRate | NeutralChannel,
+    component: Component,
+    wavelength: float | None,
+    selection: MaterialSelection,
+    *,
+    envelope: bool,
+) -> tuple[EvaluableRate, float]:
+    """Return the rate and the electrons per event one plasma selection declares.
+
+    Parameters
+    ----------
+    selected : True, IonisationRate or NeutralChannel
+        The component's selection: ``True`` for its default rate, a rate, or a
+        neutral channel.
+    component : Component
+        The labelled population.
+    wavelength : float or None
+        Reference wavelength in m, for the default rate.
+    selection : MaterialSelection
+        The run's material selection.
+    envelope : bool
+        Whether the response is envelope plasma, which has no neutral form.
+
+    Returns
+    -------
+    tuple
+        The rate, and ``1.0`` for an ionisation or ``0.0`` for a neutral channel.
+
+    Raises
+    ------
+    MaterialError
+        If a neutral channel is selected for envelope plasma.
+    """
+    if isinstance(selected, NeutralChannel):
+        if envelope:
+            msg = (
+                f"{component.label} ({component.species.name}): a neutral channel is "
+                "defined on a field grid only; envelope plasma has no neutral form"
+            )
+            raise MaterialError(msg)
+        return selected.rate, 0.0
+    if selected is True:
+        return _default_rate(component, wavelength, selection), 1.0
+    return selected, 1.0
+
+
 def responses_for(  # noqa: PLR0913 - independent public response selectors
     mixture: Mixture,
     *,
     kerr: bool = True,
     thg: bool | None = None,
-    plasma: bool | IonisationRate | Mapping[str, bool | IonisationRate] = False,
+    plasma: bool
+    | IonisationRate
+    | NeutralChannel
+    | Mapping[str, bool | IonisationRate | NeutralChannel] = False,
     raman: bool | Sequence[str] | Mapping[str, bool | MolecularOptions] = False,
     wavelength: float | None = None,
     envelope: bool = False,
@@ -576,11 +632,13 @@ def responses_for(  # noqa: PLR0913 - independent public response selectors
         error naming that species, including at zero density.
     thg : bool or None, optional
         Retain third harmonics; ``None`` follows the grid (off for envelopes).
-    plasma : bool, IonisationRate or Mapping, optional
+    plasma : bool, IonisationRate, NeutralChannel or Mapping, optional
         ``True`` selects each built-in gas's rate from optmat under the selection
         (:class:`~solprop.nonlinear.optmat_rates.OptmatRate`); a custom species'
         rate must be given by label. A mapping selects rates by label; omitted
-        labels are off.
+        labels are off. A :class:`~solprop.nonlinear.ionisation.NeutralChannel`
+        declares a channel whose events free no charge (a field-grid response with
+        ``electrons_per_event=0.0``; refused with envelope plasma).
         A bare rate must name the species to which it applies. Default ``False``.
     raman : bool, Sequence of str or Mapping, optional
         ``True`` includes every available term and logs omissions. A sequence selects
@@ -622,8 +680,9 @@ def responses_for(  # noqa: PLR0913 - independent public response selectors
     Raises
     ------
     MaterialError
-        If labels, rate bindings or required response data are unavailable, or a
-        plasma integration rule is given beside envelope plasma.
+        If labels, rate bindings or required response data are unavailable, a
+        plasma integration rule is given beside envelope plasma, or a neutral channel
+        is given beside envelope plasma.
     """
     selection = MaterialSelection() if selection is None else selection
     if envelope and plasma_integration is not None:
@@ -686,10 +745,8 @@ def responses_for(  # noqa: PLR0913 - independent public response selectors
         if selected is not False:
             if envelope and harmonic:
                 raise MaterialError("envelope plasma cannot be combined with THG")
-            rate = (
-                _default_rate(component, wavelength, selection)
-                if selected is True
-                else selected
+            rate, electrons = _selected_channel(
+                selected, component, wavelength, selection, envelope=envelope
             )
             if not isinstance(plasma, (bool, Mapping)):
                 name = rate_species(rate)[0]
@@ -708,6 +765,7 @@ def responses_for(  # noqa: PLR0913 - independent public response selectors
                     rate,
                     preionisation=component.preionisation,
                     species=label,
+                    electrons_per_event=electrons,
                     **chosen,
                 )
             )

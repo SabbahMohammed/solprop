@@ -1186,10 +1186,12 @@ void require_general_problem(const Problem& problem) {
       throw std::invalid_argument("channel parameters and coefficients must be finite");
     std::size_t expected_offset = 0;
     for (std::size_t channel = 0; channel < problem.n_channels; ++channel) {
+      // Column 7, the free current's constant, is zero for a neutral channel
+      // (solprop kernel schema 42); every other constant stays positive.
       const double* row = problem.channel_parameters.data() + 9 * channel;
       if (!(row[1] > 0.0 && row[2] > 0.0 && row[3] > row[2] && row[4] >= 0.0 &&
             row[5] >= 1.0 && row[5] == std::floor(row[5]) &&
-            row[6] == static_cast<double>(expected_offset) && row[7] > 0.0 &&
+            row[6] == static_cast<double>(expected_offset) && row[7] >= 0.0 &&
             row[8] > 0.0) ||
           row[5] > static_cast<double>(problem.channel_coefficients.size() / 4))
         throw std::invalid_argument(
@@ -1222,9 +1224,11 @@ void require_general_problem(const Problem& problem) {
             "Raman component fractions must be finite and positive");
   }
   if (problem.plasma) {
+    // A neutral channel's free-current constant is zero (solprop kernel schema 42):
+    // its events pay the energy per event and free no charge.
     if (!(problem.dt_fine > 0.0) || !(problem.d_log_field > 0.0) ||
         !(problem.field_min > 0.0) || !(problem.field_max > problem.field_min) ||
-        !(problem.charge_mass_ratio > 0.0) || !(problem.ionisation_potential > 0.0) ||
+        !(problem.charge_mass_ratio >= 0.0) || !(problem.ionisation_potential > 0.0) ||
         problem.rate_intervals == 0)
       throw std::invalid_argument("plasma constants must be positive and consistent");
     require_extent(problem.rate_coefficients.size(),

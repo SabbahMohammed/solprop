@@ -357,7 +357,10 @@ U_s(z)=I_{p,s}\sum_j w_j\rho_s(z)f_s(t_{\rm end},z,j).
 
 The area measure is the physical modal quadrature, the radial/Cartesian grid measure,
 or the effective area for a mode-averaged run. A taper scales the modal area by its
-radius ratio squared. Periodic statistics support the fractions and species electron
+radius ratio squared. A [neutral loss channel](ionisation.md#neutral-loss-channels)
+counts its events in its fraction, peak rate and energy with its barrier as $I_{p,s}$,
+and frees no electrons: its `species_electron_density` is zero and the total
+`electron_density` leaves it out. Periodic statistics support the fractions and species electron
 densities between save planes.
 
 Preionisation is already present before the pulse. Electrons produced during the

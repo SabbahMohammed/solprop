@@ -367,9 +367,89 @@ instantaneous, not cycle averaged: `PlasmaResponse` evaluates it on the instanta
 real field, and `EnvelopePlasmaResponse` performs the optical-cycle average itself.
 
 The plasma is **single ionisation**: it depletes a molecule once, creates at most one
-electron and pays one energy per event. Ionisation is also distinct from dissociation:
-no neutral fragment yield, branching ratio, recombination or ozone production is
-modelled.
+electron and pays one energy per event. Ionisation is also distinct from dissociation,
+which a [neutral loss channel](#neutral-loss-channels) can stand for; no fragment yield,
+branching ratio, recombination or ozone production is modelled.
+
+## Neutral loss channels
+
+Some field-driven events remove a molecule and cost the field energy without freeing a
+charge: the strong-field **dissociation** of a molecule into neutral fragments is the
+case in point, for example ozone at an effective barrier of about 16 eV. A **neutral
+channel** models such an event with the plasma column's population and loss current
+and without its free electrons.
+
+Write $W(|E|)$ for the event rate per molecule, $U$ for the energy each event costs the
+field and $\rho$ for the population's number density. The population obeys the same law
+as an ionised one,
+
+$$
+\frac{df}{dt}=W(1-f),\qquad f=1-(1-f_0)\,e^{-\int W\,dt},
+$$
+
+and the field must lose $U$ for every event, a power density $\rho U W(1-f)$. The
+current that does exactly this work and points along the field is
+
+$$
+\mathbf J_{\rm loss}=\rho\,U\,W\,(1-f)\,\frac{\mathbf E}{|\mathbf E|^2},
+\qquad \mathbf E\cdot\mathbf J_{\rm loss}=\rho U\frac{df}{dt},
+$$
+
+the [ionisation loss current](field-plasma.md#two-currents) with $U$ in place of the
+ionisation potential. An ionisation adds the free-electron current
+$(e^2/m_e)\int\rho f n_e\mathbf E\,dt$ for its $n_e=1$ electron per event; a neutral
+channel has $n_e=0$, so its whole polarisation is $\mathbf P=\int\mathbf J_{\rm loss}\,dt$:
+no Drude current, no plasma contribution to the refractive index and no blue shift.
+Integrating the work over a pulse gives the field's loss per unit volume,
+$\rho U(f_{\rm end}-f_0)$: the energy per event times the events, and nothing else.
+
+A channel is declared neutral where its rate is given, with
+{class}`~solprop.nonlinear.ionisation.NeutralChannel`, per label in a mixture; or with
+`electrons_per_event=0.0` on a
+{class}`~solprop.nonlinear.responses.PlasmaResponse`. The energy per event is found as
+an ionising channel's is: the rate's own (an
+{class}`~solprop.nonlinear.optmat_rates.OptmatRate` declares it), or else the
+species' ionisation data, which for a neutral channel holds the barrier. An optmat
+model from explicit parameters gives a tunnelling rate at a chosen barrier:
+
+```{code-block} python
+from optmat.gas.molecular_ionisation_rates import MolecularRateModel
+
+from solprop.constants import E_CHARGE
+from solprop.nonlinear.ionisation import NeutralChannel
+from solprop.nonlinear.optmat_rates import OptmatRate
+
+barrier = 16.42 * E_CHARGE  # an effective dissociation barrier, J
+model = MolecularRateModel.from_parameters(
+    "O3", 800e-9, form="adk", ionization_energy=barrier, electrons=2.0,
+    citation="ADK at an effective dissociation barrier",
+)
+plasma = {"N2": True, "O2": True, "O3": NeutralChannel(OptmatRate(model))}
+```
+
+Here `ozone` is a custom species labelled `"O3"` in the run's mixture (a
+[species of your own](mixtures.md#species-and-optical-tables)); the selection goes to
+`prop_capillary`, `Simulation.from_capillary` or
+{func}`~solprop.nonlinear.mixtures.responses_for` as any other `plasma` mapping does.
+
+**Statistics.** A neutral channel's events are reported under the population
+statistics' existing names: `species_ionisation` is the fraction that has undergone the
+event, `species_ionisation_energy` the energy its events have paid (the inventory
+$U\sum_j w_j\rho f$), and `species_peak_ionisation_rate` the events' peak rate. It frees
+no electrons, so its `species_electron_density` is exactly zero and `electron_density`
+counts the ionising channels alone. The total `peak_ionisation_rate` is the largest
+event rate of any channel, a neutral one included.
+
+**Limits.** The channel is single-step and irreversible within a pulse: it removes the
+molecule, tracks no fragment, branching ratio or recombination, and changes the
+composition the next pulse sees only through the densities a caller gives. The rate is
+whatever the model says it is; an ADK rate at an effective barrier is a fitted
+description, and its uncertainty is the model's, not the table's. A neutral channel is
+defined on a field grid only: envelope plasma has no neutral form and refuses one by
+name. The `mlx` backend refuses it too; `numpy_ref`, `numba_cpu` and `native` run it.
+The plasma column's boundary diagnostic (`plasma_boundary_level`) counts a neutral
+channel's $|fE|$ as if it carried a free current, so a pre-depleted neutral population
+can raise that diagnostic without any current at the window's edge.
 
 ## Ionisation in air and other mixtures
 

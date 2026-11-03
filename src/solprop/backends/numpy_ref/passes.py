@@ -753,7 +753,9 @@ def plasma_scan(
         The ionisation rate from :func:`ionisation_rate`, s^-1, shape
         ``(n_nodes_chunk, n_to)``.
     coefficients : solprop.translate.responses.PlasmaCoefficients
-        The compiled plasma group; only ``charge_mass_ratio`` is read here.
+        The compiled plasma group; only ``free_current_coefficient`` is read here:
+        ``e^2/m_e`` times the channel's electrons per event, zero for a neutral
+        channel, whose free current is then zero.
     preionisation : float
         The pre-ionised fraction at this position,
         ``coefficients.preionisation(z)``, in ``[0, 1]``.
@@ -793,7 +795,9 @@ def plasma_scan(
     rule = _rule(integral)
     exposure = rule.floor(rule.integrate(rate, dt))
     fraction = 1.0 - (1.0 - preionisation) * np.exp(-exposure)
-    integrand = fraction[..., np.newaxis, :] * coefficients.charge_mass_ratio * field_t
+    integrand = (
+        fraction[..., np.newaxis, :] * coefficients.free_current_coefficient * field_t
+    )
     free_current = rule.integrate(integrand, dt)
     return fraction, free_current
 
@@ -1083,8 +1087,9 @@ def plasma_channels_polarisation(
     r"""Sum channel weights before the two shared current integrals.
 
     Each fraction has its own exposure scan. The free-current weight is
-    ``sum rho_c f_c e_c²/m_c``; the loss numerator is
-    ``sum rho_c I_p,c W_c (1-f_c)``. Their time integrals are shared.
+    ``sum rho_c f_c n_c e²/m_e``, with ``n_c`` the channel's electrons per event (zero
+    for a neutral channel); the loss numerator is ``sum rho_c I_p,c W_c (1-f_c)``.
+    Their time integrals are shared.
     The original one-channel pass retains its density outside the integrals.
 
     Parameters
@@ -1131,7 +1136,8 @@ def _plasma_channels_current(
     r"""Sum every channel into the free and loss current densities.
 
     Each fraction has its own exposure scan. The free-current weight is
-    ``sum rho_c f_c e_c²/m_c``; the loss numerator is
+    ``sum rho_c f_c n_c e²/m_e``, with ``n_c`` the channel's electrons per event (zero
+    for a neutral channel, which adds to the loss alone); the loss numerator is
     ``sum rho_c I_p,c W_c (1-f_c)``. The free-current integral is shared; the loss
     current is pointwise.
     The original one-channel pass retains its density outside the integrals.

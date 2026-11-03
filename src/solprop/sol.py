@@ -103,6 +103,7 @@ from solprop.nonlinear import (
     TDSEGasResponse,
     TDSESampling,
 )
+from solprop.nonlinear.ionisation import NeutralChannel
 from solprop.nonlinear.optmat_rates import OptmatRate
 from solprop.optics import (
     Chain,
@@ -290,6 +291,7 @@ __all__ = [
     "Mixture",
     "ModeCollection",
     "Multistep",
+    "NeutralChannel",
     "NonlinearPhase",
     "OptmatRate",
     "Passband",

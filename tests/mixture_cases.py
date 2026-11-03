@@ -63,13 +63,22 @@ class AnalyticRate:
         )
 
 
-def mixture_case(
-    *, exponent=2, kerr=True, density_scale=1.0, preionisation=None, schedule=None
+def mixture_case(  # noqa: PLR0913 - the case's independent switches
+    *,
+    exponent=2,
+    kerr=True,
+    density_scale=1.0,
+    preionisation=None,
+    schedule=None,
+    electrons_per_event=(1.0, 1.0),
+    channels=(0, 1),
 ):
     """Construct a small field problem with two independent synthetic populations.
 
     ``preionisation`` replaces the two components' initial fractions (numbers or paths
-    along z) and ``schedule`` gives the run a fixed schedule.
+    along z) and ``schedule`` gives the run a fixed schedule. ``electrons_per_event``
+    sets each population's channel (``0.0`` a neutral channel), and ``channels`` names
+    the populations that have one.
     """
     omega = np.array([1e12, 1e18])
     optical = TabulatedSusceptibility(
@@ -111,6 +120,8 @@ def mixture_case(
                     component.species.gamma3, thg=False, species=component.label
                 )
             )
+        if index not in channels:
+            continue
         rate = build_rate_table(
             AnalyticRate(scale=(index + 1) * 1e13, exponent=exponent), (1e7, 1e11)
         )
@@ -120,6 +131,7 @@ def mixture_case(
                 rate,
                 preionisation=component.preionisation,
                 species=component.label,
+                electrons_per_event=electrons_per_event[index],
             )
         )
     initial = GaussianPulse(wavelength=800e-9, fwhm=10e-15, energy=1e-9).build(grid)

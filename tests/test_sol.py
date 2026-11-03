@@ -133,6 +133,10 @@ EXCLUDED = {
         "MAX_RATE",
         "DT_RTOL",
         "EvaluableRate",
+        # The admitted electrons per event and their check, behind a response's
+        # field; a neutral channel is declared with NeutralChannel, which is exported.
+        "ELECTRONS_PER_EVENT",
+        "check_electrons_per_event",
         # SEP 18's running-integral rule: designed by translation for a grid, and
         # handed to a direct evaluation; not an interactive name.
         "IntegrationPolicy",

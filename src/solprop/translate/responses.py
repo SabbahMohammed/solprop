@@ -70,7 +70,11 @@ from solprop.exceptions import TranslationError
 from solprop.grid import EnvelopeGrid, TimeGrid
 from solprop.modes.protocol import Mode, ParameterisedMode
 from solprop.nonlinear.envelope_plasma import EnvelopePlasmaResponse
-from solprop.nonlinear.ionisation import IonisationRate, RunningIntegral
+from solprop.nonlinear.ionisation import (
+    ELECTRONS_PER_EVENT,
+    IonisationRate,
+    RunningIntegral,
+)
 from solprop.nonlinear.normalisation import sqrtw_to_vm, uppe_prefactor
 from solprop.nonlinear.optmat_raman import OptmatRamanResponse
 from solprop.nonlinear.raman import RamanResponse, SilicaTensorResponse
@@ -755,6 +759,23 @@ class PlasmaCoefficients:
                 msg = f"{name} must be positive and finite, got {value!r}"
                 raise TranslationError(msg)
 
+    @property
+    def free_current_coefficient(self) -> float:
+        """Return the coefficient of the free-electron current per event, C^2/kg.
+
+        ``J_free = coefficient * int f E dt`` per unit density. Single ionisation frees
+        one electron per event, so here it is ``charge_mass_ratio`` itself; a
+        labelled channel (:class:`PlasmaChannel`) weighs it by its electrons per event.
+        The compiled backends read the free current's constant from this property, so
+        that a neutral channel's is exactly zero without a branch in any kernel.
+
+        Returns
+        -------
+        float
+            ``e^2/m_e`` times the electrons per event, non-negative.
+        """
+        return self.charge_mass_ratio
+
 
 def plasma_coefficients(
     response: PlasmaResponse,
@@ -976,22 +997,31 @@ def unlanded_kinks(
 class PlasmaChannel(PlasmaCoefficients):
     """Bind an independent exposure scan to a labelled population.
 
+    A channel's events either free one electron each (an ionisation) or none (a
+    **neutral channel**, kernel schema 42: strong-field dissociation into neutral
+    fragments). Both deplete the population, ``f = 1 - (1 - f_0) exp(-int W dt)``, and
+    both pay ``ionisation_potential`` per event through the loss current; only an
+    ionisation adds to the free-electron current ``rho f (e^2/m_e) n_e E`` and to the
+    electron density ``rho f n_e``, with ``n_e`` the ``electrons_per_event``.
+
     Attributes
     ----------
     charge_mass_ratio : float
-        Free-current coefficient in C²/kg, positive.
+        ``e^2/m_e`` in C²/kg, positive: the free-current constant per electron.
     ionisation_potential : float
         Energy paid per event in J, positive.
     preionisation : solprop.translate.chebyshev.PiecewiseChebyshev
-        Initial ionised fraction along z, dimensionless in [0, 1].
+        Initial fraction along z that has undergone the event, dimensionless in
+        [0, 1].
     rate : solprop.translate.ionisation.RateTable
-        Rate in s^-1 against field amplitude in V/m.
+        Event rate in s^-1 against field amplitude in V/m.
     label : str
         Unique component label in the compiled species order.
     density : solprop.translate.chebyshev.PiecewiseChebyshev
         Population number density in m^-3 along z.
     electrons_per_event : float
-        Electrons released per ionisation event; exactly 1 in schema 6.
+        Free electrons released per event: ``1.0`` (single ionisation) or ``0.0`` (a
+        neutral channel, kernel schema 42), exactly; no other value is admitted.
     """
 
     label: str
@@ -1003,10 +1033,44 @@ class PlasmaChannel(PlasmaCoefficients):
         super().__post_init__()
         if not self.label:
             raise TranslationError("plasma channel label must be nonempty")
-        if self.electrons_per_event != 1.0:
+        if self.electrons_per_event not in ELECTRONS_PER_EVENT:
             raise TranslationError(
-                f"plasma channel {self.label}: electrons_per_event must be 1.0"
+                f"plasma channel {self.label}: electrons_per_event must be 0.0 (a "
+                f"neutral channel) or 1.0 (single ionisation), got "
+                f"{self.electrons_per_event!r}"
             )
+
+    @property
+    def free_current_coefficient(self) -> float:
+        """Return the coefficient of the channel's free-electron current, C^2/kg.
+
+        ``charge_mass_ratio * electrons_per_event``: exactly ``e^2/m_e`` for an
+        ionisation (a product with one is exact) and exactly zero for a neutral
+        channel.
+
+        Returns
+        -------
+        float
+            The coefficient, non-negative.
+
+        Examples
+        --------
+        >>> import dataclasses
+        >>> from solprop.nonlinear.optmat_rates import OptmatRate
+        >>> from solprop.nonlinear.responses import PlasmaResponse
+        >>> from solprop.translate.responses import PlasmaChannel, plasma_coefficients
+        >>> leaf = plasma_coefficients(
+        ...     PlasmaResponse("Ar", OptmatRate("Ar", 800e-9)), (1e9, 1e11), z_max=1.0
+        ... )
+        >>> fields = {f.name: getattr(leaf, f.name) for f in dataclasses.fields(leaf)}
+        >>> channel = PlasmaChannel(
+        ...     **fields, label="Ar", density=leaf.preionisation,
+        ...     electrons_per_event=0.0,
+        ... )
+        >>> channel.free_current_coefficient
+        0.0
+        """
+        return self.charge_mass_ratio * self.electrons_per_event
 
 
 @dataclass(frozen=True, eq=False)
@@ -2823,6 +2887,7 @@ def _compile_plasma_channels(
                 leaf.rate,
                 label,
                 densities[label],
+                response.electrons_per_event,
             )
         )
     if len({channel.label for channel in channels}) != len(channels):

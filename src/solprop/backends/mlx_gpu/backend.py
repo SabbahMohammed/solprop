@@ -169,6 +169,14 @@ def refuse_unsupported(problem: KernelProblem) -> None:
             stepper.interpolate_planes,
             "interpolated save planes (not yet on mlx); land on the planes instead",
         ),
+        (
+            any(
+                channel.electrons_per_event == 0.0
+                for channel in problem.responses.plasma_channels
+            ),
+            "a neutral plasma channel (electrons_per_event=0.0, kernel schema 42): "
+            "it is not qualified on mlx; use backend='numpy_ref' or 'native'",
+        ),
     ]
     for refuse, what in refusals:
         if refuse:

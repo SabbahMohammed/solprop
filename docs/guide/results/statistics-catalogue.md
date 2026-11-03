@@ -394,3 +394,7 @@ not sum independently selected species maxima. Periodic species fractions and el
 densities use these same definitions between save planes. Pulse work subtracts the
 initial inventory. The [mixture guide](../media/mixtures.md) gives the formulas and processing
 accessors, including node fluence and the separately attributed linear absorption.
+A [neutral loss channel](../media/ionisation.md#neutral-loss-channels) reports its events
+under these names -- the fraction that has undergone the event, its peak rate and the
+energy its events paid -- and frees no electrons: its species electron density is zero,
+and `electron_density` (and `on_axis_electron_density`) count the ionising channels only.
