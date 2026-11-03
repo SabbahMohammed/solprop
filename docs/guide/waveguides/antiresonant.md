@@ -86,6 +86,10 @@ $\alpha=CL\ln(10)/10$ and the confinement contribution to the imaginary index is
 $c\alpha/(2\omega)$. `loss=True`, `False`, a nonnegative scale, and an absolute
 callable $\alpha(\omega)$ have the same meaning as for a capillary. A scale is a
 user adjustment to the fit. Gas absorption retains the parent's material contract.
+`loss="gas"` drops the confinement term and nothing else: the fits' real terms stay,
+and an absorbing gas attenuates through its complex index in $n_g$ and in the
+decrement over it, as it does beside the confinement loss
+([gas absorption without the wall](capillary-model.md#gas-absorption-without-the-wall)).
 
 The real-index fit uses an effective core radius and a dispersive resonance term:
 

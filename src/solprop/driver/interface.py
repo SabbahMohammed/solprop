@@ -1023,9 +1023,10 @@ def prop_capillary(  # noqa: PLR0913 - the interface's keyword surface
     model : {'full', 'reduced'}, optional
         Which Marcatili model the modes use; refused beside a
         supplied set unless it is the default or the modes' own.
-    loss : bool, float or callable, optional
-        Propagation loss of the modes; refused beside a supplied
-        set unless it is the default or the modes' own.
+    loss : bool, float, 'gas' or callable, optional
+        Propagation loss of the modes; ``"gas"`` keeps the fill's absorption
+        and drops the wall's. Refused beside a supplied set unless it is the
+        default or the modes' own.
     cladding : GlassIndex, complex or None, optional
         Cladding index; ``None`` is the package's cited silica. Beside a
         supplied set, refused unless it is the default or the modes' own.

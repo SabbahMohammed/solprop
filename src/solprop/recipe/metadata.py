@@ -1192,10 +1192,16 @@ def _capillary() -> tuple[Parameter, ...]:
         ),
         Parameter(
             "loss",
-            (_BOOLEAN, Form("number"), Form("callable", recipe=False)),
+            (
+                _BOOLEAN,
+                Form("number"),
+                Form("choice", choices=("gas",)),
+                Form("callable", recipe=False),
+            ),
             "medium",
             "basic",
-            "Include the capillary's loss: on or off, a scale, or a curve.",
+            "Include the capillary's loss: on or off, a scale, the gas's alone, or a "
+            "curve.",
             "guide/waveguides/capillary-model.md",
             resolvable=True,
         ),

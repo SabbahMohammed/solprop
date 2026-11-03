@@ -4942,9 +4942,11 @@ class Simulation(Displayed):
         model : {'full', 'reduced'}, optional
             Which Marcatili model the modes use; beside a supplied set, refused unless
             it is the default or the modes' own.
-        loss : bool, float or callable, optional
-            Propagation loss of the modes; beside a supplied set, refused unless it
-            is the default or the modes' own.
+        loss : bool, float, 'gas' or callable, optional
+            Propagation loss of the modes; ``"gas"`` keeps the fill's absorption
+            and drops the wall's (``docs/guide/waveguides/capillary-model.md``,
+            "Loss"). Beside a supplied set, refused unless it is the default or
+            the modes' own.
         cladding : GlassIndex, complex or None, optional
             Cladding index; ``None`` is the package's cited silica. Beside a
             supplied set, refused unless it is the default or the modes' own.
@@ -6337,9 +6339,11 @@ class Simulation(Displayed):
         model : {'full', 'reduced'}, optional
             Which Marcatili model the modes use; beside a supplied set, refused unless
             it is the default or the modes' own.
-        loss : bool, float or callable, optional
-            Propagation loss of the modes; beside a supplied set, refused unless it
-            is the default or the modes' own.
+        loss : bool, float, 'gas' or callable, optional
+            Propagation loss of the modes; ``"gas"`` keeps the fill's absorption
+            and drops the wall's (``docs/guide/waveguides/capillary-model.md``,
+            "Loss"). Beside a supplied set, refused unless it is the default or
+            the modes' own.
         cladding : GlassIndex, complex or None, optional
             Cladding index; ``None`` is the package's cited silica. Beside a
             supplied set, refused unless it is the default or the modes' own.
@@ -7638,7 +7642,7 @@ def _check_wall_declaration(
         turns ``"auto"`` into a concrete choice.
     model : {'full', 'reduced'}
         The ``model=`` keyword.
-    loss : bool, float or callable
+    loss : bool, float, 'gas' or callable
         The ``loss=`` keyword.
     lattice : solprop.modes.antiresonant.TubeLattice or None
         The ``lattice=`` keyword.
@@ -10024,7 +10028,7 @@ def _capillary_modes(  # noqa: PLR0913 - capillary geometry and material keyword
         Tube geometry selecting Vincetti modes for an integer count.
     model : {'full', 'reduced'}
         Marcatili model for a numbered mode set.
-    loss : bool, float or callable
+    loss : bool, float, 'gas' or callable
         Total loss policy for a numbered mode set.
     cladding : GlassIndex, complex or None
         Cladding index for a numbered mode set.
@@ -10131,7 +10135,7 @@ def _refuse_ignored_geometry(
         The run's length, m, over which the radius paths are compared.
     model : {'full', 'reduced'}
         The declared Marcatili model.
-    loss : bool, float or callable
+    loss : bool, float, 'gas' or callable
         The declared loss policy.
     cladding : GlassIndex, complex or None
         The declared cladding index.

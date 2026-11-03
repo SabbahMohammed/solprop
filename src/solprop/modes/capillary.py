@@ -313,12 +313,17 @@ class MarcatiliMode(GasFillMixin):
         :attr:`orthogonal_polarisation` returns.
     model : str
         ``"full"`` for the square root, ``"reduced"`` for its leading-order expansion.
-    loss : bool or float or callable
+    loss : bool or float or {'gas'} or callable
         ``True`` for the model's own loss, ``False`` for none, a float to scale it, or
         a callable ``alpha(omega)`` giving an **absolute** power loss coefficient in
         1/m that replaces it. The float and the callable therefore mean different
         things, deliberately: the float is a fitting knob on the model, the callable is
-        measured fibre loss. The model's own loss is never negative: where the square
+        measured fibre loss. ``"gas"`` keeps the fill's absorption and removes the
+        wall's: the index is formed with an ideal wall, ``v_n = 0``, so that the full
+        model is ``sqrt(eps_co - (u/(ka))^2)`` and the reduced one drops its loss
+        term. The wall's small real index shift goes with its loss
+        (``docs/guide/waveguides/capillary-model.md``, "Loss").
+        The model's own loss is never negative: where the square
         root lands on the branch that reads as gain -- a cladding index below unity,
         outside Marcatili's regime -- it is clamped at zero and the mode logs the fact
         once. A callable is the caller's and is not clamped. A callable that
@@ -380,6 +385,8 @@ class MarcatiliMode(GasFillMixin):
     cladding_index: GlassIndex | complex = field(init=False, repr=False)
     _aeff_factor: float = field(init=False, repr=False)
     _gain_warned: bool = field(init=False, default=False, repr=False)
+    # loss="gas" forms the index with an ideal wall, v_n = 0 (`_cladding_terms`).
+    _GAS_LOSS_SUPPORTED: ClassVar[bool] = True
     # The mode a frozen copy was taken from, when the copy's frequency-only terms are
     # the origin's (:meth:`at_parameters`); shared by :meth:`sampled_terms` in a scope.
     _terms_origin: ClassVar["MarcatiliMode | None"] = None  # noqa: UP037 - the hook resolves class names eagerly
@@ -883,6 +890,34 @@ class MarcatiliMode(GasFillMixin):
             dcladding_term_domega=dterm,
         )
 
+    def _cladding_terms(
+        self, terms: MarcatiliTerms
+    ) -> tuple[Complex[np.ndarray, " n_omega"], Complex[np.ndarray, " n_omega"]]:
+        """Return the cladding term ``v_n`` the index is formed with, and its slope.
+
+        ``loss="gas"`` forms the index with an ideal wall: ``v_n = 0``, on which the
+        transverse field vanishes at ``r = a``, so nothing leaks and the wall shifts
+        nothing. The whole term goes, its real part with its loss, because the two
+        come from the one penetration of the field into the wall; for a transparent
+        cladding that real part, ``(u/(ka))^2 (v_n/(ka))^2`` in ``n_eff^2``, is beyond
+        the first order in ``1/(ka)`` the expansion is accurate to anyway. Every other
+        setting forms the index with the sampled term and applies itself afterwards.
+
+        Parameters
+        ----------
+        terms : MarcatiliTerms
+            The sampled frequency-dependent quantities.
+
+        Returns
+        -------
+        tuple of numpy.ndarray
+            ``v_n`` and ``dv_n/domega`` in s/rad, zeros for ``loss="gas"``.
+        """
+        if self._gas_loss_only:
+            zero = np.zeros_like(terms.cladding_term)
+            return zero, zero
+        return terms.cladding_term, terms.dcladding_term_domega
+
     def _waveguide(
         self, terms: MarcatiliTerms, radius: float
     ) -> tuple[Inexact[np.ndarray, " n_omega"], Inexact[np.ndarray, " n_omega"]]:
@@ -902,13 +937,12 @@ class MarcatiliMode(GasFillMixin):
         """
         omega = terms.omega
         scale = C / (omega * radius)
-        bracket = 1.0 - 1j * terms.cladding_term * scale
+        cladding, dcladding = self._cladding_terms(terms)
+        bracket = 1.0 - 1j * cladding * scale
         squared = (terms.u_nm * scale) ** 2
         # d(scale)/d(omega) = -scale/omega, so the two pieces below are the product
         # rule on w = u^2 scale^2 bracket^2.
-        dbracket = -1j * (
-            terms.dcladding_term_domega * scale - terms.cladding_term * scale / omega
-        )
+        dbracket = -1j * (dcladding * scale - cladding * scale / omega)
         derivative = squared * (-2.0 * bracket**2 / omega + 2.0 * bracket * dbracket)
         return np.asarray(squared * bracket**2), np.asarray(derivative)
 
@@ -959,14 +993,15 @@ class MarcatiliMode(GasFillMixin):
         squared = (terms.u_nm * scale) ** 2
         refractivity = 0.5 * chi - 0.5 * squared
         derivative = 0.5 * dchi + squared / omega
-        if self.loss is not False:
+        if self.loss is not False and not self._gas_loss_only:
             # Dropped rather than real-parted when the mode is declared lossless. It
             # matters because v_n is complex for an absorbing cladding, so `i v_n`
             # carries a *real* shift as well as the loss: taking the real
             # part of the lossy expression would keep that shift, and the lossless
             # reduced model would then differ from the polynomial it is meant to be.
             # The full model behaves the other way round -- there the lossless mode
-            # takes the real part of the square root, complex v_n and all.
+            # takes the real part of the square root, complex v_n and all. The
+            # ideal wall of loss="gas" drops the term too, keeping chi's absorption.
             refractivity = refractivity + 1j * squared * terms.cladding_term * scale
             derivative = derivative + 1j * squared * scale * (
                 terms.dcladding_term_domega - 3.0 * terms.cladding_term / omega
@@ -1227,7 +1262,8 @@ class MarcatiliMode(GasFillMixin):
         ``dn/dz = (sum_s gamma_s rho_s' - (dW/da) a')/(2 n)``; the reduced model
         differentiates its own polynomial. The loss specification acts on the
         imaginary part exactly as it does on the index: ``False`` drops it, a float
-        scales it, a measured curve ``alpha(omega)`` does not depend on ``z`` and
+        scales it, ``"gas"`` forms both with ``v = 0`` and keeps the fill's
+        absorption, a measured curve ``alpha(omega)`` does not depend on ``z`` and
         contributes nothing, where the no-gain clamp binds the imaginary part's slope
         is zero, and where the evanescent floor binds the whole slope is zero, as
         :meth:`dneff_domega`'s is. What the coherent wall
@@ -1298,13 +1334,13 @@ class MarcatiliMode(GasFillMixin):
         squared = (terms.u_nm * scale) ** 2
         refractivity = self._model_values(terms, radius, density)[0]
         if self.model == "full":
-            vs = terms.cladding_term * scale
+            vs = self._cladding_terms(terms)[0] * scale
             dwaveguide = -2.0 * squared / radius * (1.0 - 1j * vs) * (1.0 - 2j * vs)
             derivative = (dchi - dwaveguide * slope) / (2.0 * (1.0 + refractivity))
         else:
             # n - 1 = chi/2 - (u s)^2/2 + i u^2 s^3 v, with d(s^k)/da = -k s^k/a.
             derivative = 0.5 * dchi + squared / radius * slope
-            if self.loss is not False:
+            if self.loss is not False and not self._gas_loss_only:
                 derivative = (
                     derivative
                     - 3j * squared * terms.cladding_term * scale / radius * slope
@@ -1338,7 +1374,8 @@ class MarcatiliMode(GasFillMixin):
             # An absolute alpha(omega) replaces the imaginary part and has no z in it.
             slope = np.real(derivative) + 0j
         else:
-            factor = float(specification)
+            # loss="gas" formed both with the ideal wall and keeps what is left whole.
+            factor = 1.0 if self._gas_loss_only else float(specification)
             refractivity = np.real(refractivity) + 1j * factor * np.imag(refractivity)
             slope = np.real(derivative) + 1j * factor * np.imag(derivative)
             slope = np.where(np.imag(refractivity) < 0.0, np.real(slope), slope)

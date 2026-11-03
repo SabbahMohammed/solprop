@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import is_dataclass, replace
 from types import MappingProxyType
-from typing import Final, Literal, cast
+from typing import ClassVar, Final, Literal, cast
 
 import numpy as np
 from jaxtyping import Complex, Float, Inexact
@@ -49,11 +49,18 @@ logger = logging.getLogger(__name__)
 
 _LossCurve = Callable[[Float[np.ndarray, " n_omega"]], Float[np.ndarray, " n_omega"]]
 
-LossSpec = bool | float | _LossCurve
+# loss="gas" keeps the fill's absorption and drops the guide's own loss: an ideal
+# wall (v_n = 0) for MarcatiliMode, no confinement term for VincettiMode. Every other
+# mode refuses it by name (`_GAS_LOSS_SUPPORTED`).
+_GAS_LOSS: Final = "gas"
+
+LossSpec = bool | float | Literal["gas"] | _LossCurve
 """Specify the model loss of any mode that mixes in :class:`GasFillMixin`.
 
 The vocabulary is documented on :class:`~solprop.modes.capillary.MarcatiliMode`,
-which shares it with :class:`~solprop.modes.rectangular.RectMode`.
+which shares it with :class:`~solprop.modes.rectangular.RectMode`; only the
+capillary family (:class:`~solprop.modes.capillary.MarcatiliMode` and
+:class:`~solprop.modes.antiresonant.VincettiMode`) takes ``"gas"``.
 """
 
 EVANESCENT_INDEX_FLOOR: Final = 1e-3
@@ -116,6 +123,21 @@ class GasFillMixin(Displayed):
     loss: LossSpec
     model: Literal["full", "reduced"]
     _gain_warned: bool
+    # Whether the concrete mode forms its index without the guide's own loss when
+    # asked for ``loss="gas"``; a mode that does not refuses it at construction.
+    _GAS_LOSS_SUPPORTED: ClassVar[bool] = False
+
+    @property
+    def _gas_loss_only(self) -> bool:
+        """Return whether the loss setting is ``"gas"``: absorption of the fill only.
+
+        Returns
+        -------
+        bool
+            True for ``loss="gas"``, which the constructor has checked the mode
+            implements.
+        """
+        return isinstance(self.loss, str)
 
     def _loss_text(self) -> object:
         """Return the loss specification for printing.
@@ -123,9 +145,12 @@ class GasFillMixin(Displayed):
         Returns
         -------
         object
-            The flag or the factor as it was given, or ``"callable"`` for a loss curve.
+            The flag, the factor or ``"gas"`` as it was given, or ``"callable"`` for a
+            loss curve.
         """
-        return self.loss if isinstance(self.loss, (bool, int, float)) else "callable"
+        return (
+            self.loss if isinstance(self.loss, (bool, int, float, str)) else "callable"
+        )
 
     def _fill_text(self) -> str:
         """Return the fill as a person would say it, for printing.
@@ -179,7 +204,21 @@ class GasFillMixin(Displayed):
         # A constant path is stored as its number, so the mode takes the
         # constant-temperature arithmetic bit for bit.
         object.__setattr__(self, "temperature", temperature)
-        if not isinstance(self.loss, bool):
+        if isinstance(self.loss, str):
+            if self.loss != _GAS_LOSS:
+                msg = (
+                    'loss must be a bool, a non-negative scale, "gas" or a callable '
+                    f"alpha(omega), got {self.loss!r}"
+                )
+                raise ModeError(msg)
+            if not self._GAS_LOSS_SUPPORTED:
+                msg = (
+                    f'{type(self).__name__} does not implement loss="gas", the fill\'s '
+                    "absorption without the guide's own loss; MarcatiliMode and "
+                    "VincettiMode do"
+                )
+                raise ModeError(msg)
+        elif not isinstance(self.loss, bool):
             if isinstance(self.loss, (float, int)):
                 if self.loss < 0.0:
                     raise ModeError(
@@ -187,7 +226,7 @@ class GasFillMixin(Displayed):
                     )
             elif not callable(self.loss):
                 raise ModeError(
-                    "loss must be a bool, a non-negative scale or a callable "
+                    'loss must be a bool, a non-negative scale, "gas" or a callable '
                     f"alpha(omega), got {type(self.loss).__name__}"
                 )
 
@@ -244,7 +283,7 @@ class GasFillMixin(Displayed):
 
     def _warn_loss_derivative(self) -> None:
         """Report when a callable loss requires a numerical derivative."""
-        if not isinstance(self.loss, (bool, int, float)) and not hasattr(
+        if not isinstance(self.loss, (bool, int, float, str)) and not hasattr(
             self.loss, "derivative"
         ):
             logger.warning(
@@ -263,8 +302,9 @@ class GasFillMixin(Displayed):
         Return ``rho_s(z) omega Im(gamma_s(omega)) / c`` in mixture order.
         This dilute-material attribution excludes wall leakage and the higher-order
         square-root and waveguide corrections in the mode's total attenuation.
-        ``loss=False`` removes it; a numeric loss scales it. A callable replaces
-        total loss and therefore supplies no species attribution.
+        ``loss=False`` removes it; a numeric loss scales it; ``loss="gas"``, which
+        removes only the wall's loss, keeps it whole, as ``True`` does. A callable
+        replaces total loss and therefore supplies no species attribution.
 
         Parameters
         ----------
@@ -291,7 +331,7 @@ class GasFillMixin(Displayed):
             raise ModeError(
                 "callable loss replaces total loss without species attribution"
             )
-        scale = float(self.loss)
+        scale = 1.0 if self._gas_loss_only else float(self.loss)
         position = np.asarray([z])
         if self.mixture is not None:
             result = np.zeros((len(self.mixture.components), omega.size))
@@ -565,6 +605,11 @@ class GasFillMixin(Displayed):
             The refractivity and derivative with the requested loss.
         """
         specification = self.loss
+        if isinstance(specification, str):
+            # loss="gas": the mode formed these values without its own loss (an ideal
+            # wall, or no confinement term), so what remains is the fill's absorption,
+            # kept whole as loss=True keeps the model's.
+            return self._no_gain(refractivity, derivative)
         if isinstance(specification, bool):
             if specification:
                 return self._no_gain(refractivity, derivative)

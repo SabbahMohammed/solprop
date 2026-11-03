@@ -816,7 +816,9 @@ class VincettiMode(MarcatiliMode):
 
     All inherited capillary parameters retain their meaning. ``cladding`` is the
     tube index; its real part enters the fits. Only ``model="full"`` is accepted.
-    Loss follows the parent policy and positive extinction attenuates power. The
+    Loss follows the parent policy and positive extinction attenuates power;
+    ``loss="gas"`` drops the confinement term ``i c alpha / (2 omega)`` and keeps
+    every real term of the fits and the gas's absorption. The
     real index is floored at ``EVANESCENT_INDEX_FLOOR`` with zero derivative where
     the floor binds. The protocol area and transverse fields remain Marcatili's.
     The gas index enters the normalised frequency and the waveguide decrement
@@ -1012,12 +1014,15 @@ class VincettiMode(MarcatiliMode):
             if conventions.single_power_decrement
             else waveguide / core**2
         )
-        refractivity = (
-            gas
-            - decrement
-            + correction
-            + 1j * C * math.log(10) / 20 * confinement / omega
-        )
+        refractivity = gas - decrement + correction
+        if not self._gas_loss_only:
+            # The confinement loss, alpha = CL ln(10) / 10 in 1/m, as Im n_eff =
+            # c alpha / (2 omega). loss="gas" drops it and nothing else: the gas's
+            # absorption is in `gas` and `core` (through the decrement), and the
+            # resonance correction and effective radius are real.
+            refractivity = (
+                refractivity + 1j * C * math.log(10) / 20 * confinement / omega
+            )
         return _SpectralFit(refractivity, core, effective_radius, correction, decrement)
 
     def _model_values(
