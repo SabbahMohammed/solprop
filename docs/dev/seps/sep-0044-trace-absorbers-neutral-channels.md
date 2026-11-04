@@ -15,7 +15,7 @@
 | **Requires** | [SEP 3](archive/sep-0003-optmat-materials.md): optmat materials and the Raman mixture rules (D13, D16); [SEP 27](archive/sep-0027-held-plasma-current.md): the held field-grid plasma current |
 | **Supersedes** | — |
 | **Superseded-by** | — |
-| **Implementation** | Phase 1 (gas-only loss): implemented on a local branch, `feature/air-ozone-loss`, ahead of acceptance (Part III). Phase 2 (neutral channels): implemented on a local branch, `feature/air-ozone`, ahead of acceptance (Part III) |
+| **Implementation** | Phases 1 (gas-only loss) and 2 (neutral channels): implemented ahead of acceptance (Part III) on local branches, merged with `main` at kernel schema 45 on the local branch `feature/air-ozone` (kernel schema 46) |
 | **Manual pages** | — |
 
 ## Part I — Proposal
@@ -692,6 +692,23 @@ has neither feature; both are listed among the capabilities beyond it.
   `main` after SEP 43, `numba_cpu`'s packing drops out with the backend, and the schema
   number follows `main`'s: 44 there on 2026-11-04, so this change would become 45.
 
+### Integration with `main`
+
+- **Scope:** 2026-11-04, Opus 5.5 (coding agent) for the author, on the local branch
+  `feature/air-ozone`: `main` (`f865adbb`, kernel schema 45, `numba_cpu` retired by
+  SEP 43) merged into the Phase 2 branch, then the Phase 1 branch merged in; merges
+  rather than a rebase, so the reviewed commits keep their hashes. Not yet pushed or
+  reviewed.
+- **Delivered:** the neutral channel at kernel schema 46 (the literals, the contract's
+  version note, the native backend's schema note); `numba_cpu`'s packing of the
+  channel dropped with the backend; `electrons_per_event` named in `PlasmaResponse`'s
+  recipe table (SEP 41), which upstream's metadata tests require. Phase 1 merged
+  without conflict.
+- **Verification:** the new and affected modules on `numpy_ref` and native (the neutral
+  channel, optmat rates, the mixture ladder, the driver, the problem, the summary, the
+  modes and the recipes, the native contract, backend and mixture tests) pass on the
+  merged tree, run serially; ruff and codespell are clean.
+
 ### Verification of (D) — supplied Raman beside a trace and a drifting composition
 
 Not a phase; a check of the route §6.4 recommends, made while drafting. N₂ and O₂ were
@@ -724,3 +741,6 @@ march). The Raman response changes the output field by 2 % (0.1 µJ) and 62 % (2
   a pull request. The **Author** field names the person who asked for the work, who is
   not a maintainer: SEP 0 §5 wants a maintainer there, to be settled before the SEP
   goes upstream.
+- 2026-11-04: `main` merged into the Phase 2 branch and the Phase 1 branch merged in
+  (Part II, "Integration with `main`"); the kernel schema is 46, `main`'s being 45. 44
+  is still free among the SEPs on `main`.
