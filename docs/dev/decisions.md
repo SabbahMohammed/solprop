@@ -1770,7 +1770,9 @@ Withdrawn (development-process record, not a design decision).
   dataclass field whose metadata says `record_none=False` is left out of the record while
   it is `None`, so an unset `ApertureSet.shapes`, `profiles` or `extents` or
   `Absorber.user_rate` keeps a run's record and hash. This is an exception to "every field
-  is still recorded" above.
+  is still recorded" above. Likewise a field whose metadata says `record_default=False`
+  is left out while it equals its default: `PlasmaResponse.electrons_per_event` at one
+  (SEP 44), so only a neutral channel's record carries it.
 
 ## ADR-064 — `numba_cpu` is retired: no Tier 2, and the documentation lane runs on the wheel
 

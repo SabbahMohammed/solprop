@@ -555,8 +555,8 @@ NEUTRAL_VALUES: Final[tuple[Neutral, ...]] = (
     # A free-space beam records its displacement and tilt (SEP 41, S6); every earlier
     # beam was launched centred and untilted.
     Neutral("configuration.{initial,pulse}.{displacement,tilt}", [0.0, 0.0], "0.2.0"),
-    # A plasma response records the electrons each event frees (kernel schema 42);
-    # every earlier response was single ionisation, one electron per event.
+    # A neutral channel's plasma response records the electrons each event frees, zero
+    # (kernel schema 46, SEP 44); single ionisation, one per event, is left out.
     Neutral("**.electrons_per_event", 1.0, "0.2.0"),
 )
 """One entry per recorded path a release declared neutral (SEP 42 section 4).

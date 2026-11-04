@@ -18,6 +18,7 @@ convention follow ``docs/dev/conventions.md`` sections 2 and 4, and the derivati
 every numerical factor is in ``docs/guide/media/nonlinear.md``.
 """
 
+import dataclasses
 import logging
 import math
 from dataclasses import KW_ONLY, dataclass
@@ -1202,7 +1203,11 @@ class PlasmaResponse:
     preionisation: float | ZProfile = 0.0
     species: str | None = None
     integration: IntegrationPolicy = "band"
-    electrons_per_event: float = 1.0
+    # Recorded only for a neutral channel: a single-ionisation response keeps the record
+    # and configuration hash it had before the channel existed.
+    electrons_per_event: float = dataclasses.field(
+        default=1.0, metadata={"record_default": False}
+    )
 
     def __post_init__(self) -> None:
         """Normalise the species and reject settings that cannot give a polarisation.

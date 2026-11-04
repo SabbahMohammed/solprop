@@ -34,6 +34,7 @@ from solprop.nonlinear.ionisation import (
 from solprop.nonlinear.mixtures import responses_for
 from solprop.nonlinear.optmat_rates import OptmatRate
 from solprop.nonlinear.responses import PlasmaResponse
+from solprop.output.schema import serialise
 from solprop.physdata import Gas, Mixture, ionisation_potential
 from solprop.translate.responses import PlasmaChannel, plasma_coefficients
 
@@ -180,6 +181,18 @@ def test_one_electron_per_event_is_the_default_exactly():
         default.evaluate(field[None, :], DENSITY, dt=dt, kind="field"),
         explicit.evaluate(field[None, :], DENSITY, dt=dt, kind="field"),
     )
+
+
+def test_only_a_neutral_response_records_its_electrons_per_event():
+    # Single ionisation keeps the record, and with it the configuration hash, that a
+    # response had before neutral channels existed; a neutral channel records its zero,
+    # so the two hash apart.
+    single = serialise(ionising())
+    assert isinstance(single, dict) and "electrons_per_event" not in single
+    assert serialise(dataclasses.replace(ionising(), electrons_per_event=1.0)) == single
+    record = serialise(neutral())
+    assert isinstance(record, dict) and record["electrons_per_event"] == 0.0
+    assert {k: v for k, v in record.items() if k != "electrons_per_event"} == single
 
 
 def test_a_neutral_channel_compiles_to_a_zero_free_current_coefficient():

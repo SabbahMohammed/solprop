@@ -267,6 +267,11 @@ def _serialise_dataclass(value: object) -> dict[str, JsonValue]:
     that does not use it keeps its record and its hash (an aperture's shape, an
     absorber's ``user_rate``). Set, it is recorded, and two different values hash apart.
 
+    A field whose metadata says ``record_default=False`` is left out while it equals its
+    default, for the same reason, where the earlier meaning is a value rather than
+    ``None``: a plasma response's ``electrons_per_event`` at one, single ionisation, so
+    only a neutral channel's record carries it.
+
     Parameters
     ----------
     value : object
@@ -288,6 +293,8 @@ def _serialise_dataclass(value: object) -> dict[str, JsonValue]:
             continue
         held = getattr(value, entry.name)
         if held is None and not entry.metadata.get("record_none", True):
+            continue
+        if not entry.metadata.get("record_default", True) and held == entry.default:
             continue
         record[entry.name] = serialise(held)
     return record

@@ -425,7 +425,9 @@ partner is, and belong in their own proposal.
 
 No default changes. (A) adds a value to `LossSpec`; the signatures of the hollow modes
 change in their annotation only. (B) bumps `KERNEL_SCHEMA_VERSION`; saved runs keep
-their layout (a run record gains `electrons_per_event`, read as one where it is absent),
+their layout (a neutral channel's record gains `electrons_per_event`; a single-ionisation
+response leaves it out, so its record and hash are unchanged, and an absent value reads
+as one),
 and every existing channel has $q = 1$, so no validated result moves. Luna.jl
 has neither feature; both are listed among the capabilities beyond it.
 
@@ -703,7 +705,11 @@ has neither feature; both are listed among the capabilities beyond it.
   version note, the native backend's schema note); `numba_cpu`'s packing of the
   channel dropped with the backend; `electrons_per_event` named in `PlasmaResponse`'s
   recipe table (SEP 41), which upstream's metadata tests require. Phase 1 merged
-  without conflict.
+  without conflict. D5 revised: `electrons_per_event` is recorded only where it is not
+  one (a dataclass field's `record_default=False`, beside `main`'s `record_none=False`),
+  so a single-ionisation run keeps its record and configuration hash, as `main` keeps
+  them for its own optional fields; `main`'s pinned record of a capillary call without
+  TDSE (`tests/driver/test_tdse_entry.py`) caught the change of every plasma record.
 - **Verification:** the new and affected modules on `numpy_ref` and native (the neutral
   channel, optmat rates, the mixture ladder, the driver, the problem, the summary, the
   modes and the recipes, the native contract, backend and mixture tests) pass on the
