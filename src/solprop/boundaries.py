@@ -60,7 +60,9 @@ sets the spectral rate and the ceiling every spectral rate is validated against;
 ``12.6 (1 - W(t)) / ell_c``, and its ceiling; a free-space run's transverse boundary is
 designed by :class:`SpatialAbsorber` (SEP 40). A custom spectral rate
 (:func:`custom_absorber`) can then be as strong as
-a measurement needs without moving the explicit in-stage collars or their stable step.
+a measurement needs without moving the explicit in-stage collars or their stable step,
+and a temporal collar sized from a run's walk-off (``walkoff`` of :func:`absorber`)
+leaves the spectral rate where it was.
 
 The manual page is ``docs/guide/numerics/boundaries.md``.
 """
@@ -69,11 +71,11 @@ import logging
 import math
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Final
 
 import numpy as np
-from jaxtyping import Bool, Float, Inexact
+from jaxtyping import Bool, Complex, Float, Inexact, UInt8
 
 from solprop.exceptions import GridError, SolpropWarning
 from solprop.grid import Collar, TimeGrid
@@ -84,11 +86,16 @@ __all__ = [
     "MAX_ALPHA_LENGTH",
     "MIN_COLLAR_ATTENUATION",
     "MIN_COLLAR_SAMPLES",
+    "SPLIT_CROSSING",
+    "SPLIT_OCCUPIED_SHARE",
+    "SPLIT_RATE_BUCKETS",
+    "SPLIT_RATE_TOP",
     "STABILITY_RADIUS",
     "TEMPORAL_ALPHA_LENGTH",
     "Absorber",
     "SpatialAbsorber",
     "SpatialAbsorberDesign",
+    "SplitCrossing",
     "absorber",
     "apply_band_mask",
     "apply_split_step",
@@ -96,6 +103,9 @@ __all__ = [
     "custom_absorber",
     "no_absorber",
     "nonlinear_absorber_term",
+    "split_bucket_rates",
+    "split_crossing_step",
+    "split_rate_buckets",
     "split_step_factor",
     "stable_step",
     "temporal_collar_rate",
@@ -158,6 +168,47 @@ MIN_COLLAR_ATTENUATION: Final = math.log(1e3)
 :func:`warn_walkoff` says the absorber is too weak for the walk-off the run can produce.
 """
 
+_WALKOFF_ROUNDING_MARGIN: Final = 1.0 - 1e-9
+"""Factor shortening the collar length ``walkoff`` asks for, just below one.
+
+So that a collar sized for a drift passes :func:`warn_walkoff` at exactly that drift
+whatever the summation's rounding: the rate's integral is summed over ``n_t`` samples,
+each rounded, so it moves by at most ``n_t * eps``, about ``2e-10`` at a million
+samples. The strength moves by a part in ``1e9``, which no measurement of a collar
+resolves.
+"""
+
+SPLIT_CROSSING: Final = 0.5
+"""``c`` of the split collar's step limit ``h <= c w / max |d tau / dz|``: no step
+carries light more than half the temporal collar's width (:func:`split_crossing_step`).
+
+The ``"split_step"`` scheme damps the collar once per accepted step, at the step's end,
+so light that walks through the collar within one step wraps round the periodic window
+into the interior undamped, and on a linear stretch the error estimate sees nothing.
+At half a width a crossing is damped at two step ends at least; the same factor as SEP
+40's adaptive transverse clamp (:data:`solprop.spatial_absorber.CROSSING_ADAPTIVE`).
+"""
+
+SPLIT_OCCUPIED_SHARE: Final = 1e-6
+"""The share of the energy the split collar's crossing limit may set aside: the
+fastest-walking light holding at most this much does not bound the step
+(:class:`SplitCrossing`). Were all of it to wrap round the window undamped, the field
+error would be its square root, the boundary monitor's default budget."""
+
+SPLIT_RATE_BUCKETS: Final = 128
+"""Walk-off rate buckets of :class:`SplitCrossing`, logarithmic from
+:data:`SPLIT_RATE_TOP` down nine decades: each bucket's rate is its upper edge, at most
+:math:`10^{9/128}`, 18 %, above the rates it holds, and the open first bucket's is the
+fastest rate the bins reach, so the limit is never longer than the bins' own would
+give."""
+
+SPLIT_RATE_TOP: Final = 1e-7
+"""The fastest bucket's lower edge, s/m: a group index 30 from the frame's, beyond any
+propagating light. The fastest bucket is open above it and is counted at the fastest
+rate a run's bins reach (:attr:`SplitCrossing.fastest`)."""
+
+_SPLIT_RATE_DECADES: Final = 9.0
+
 STABILITY_RADIUS: Final = 3.3
 """How far DOPRI5's stability region reaches along the negative real axis.
 
@@ -179,10 +230,11 @@ class Absorber:
     Attributes
     ----------
     spectral_rate : numpy.ndarray
-        Power absorption coefficient on the coarse frequency axis, 1/m, shape
-        ``(n_omega,)``. Exactly zero in the flat region and outside the active mask,
-        where the linear operator is zero anyway. Folded into the linear operator as
-        ``-alpha/2``.
+        Total power absorption coefficient on the coarse frequency axis, 1/m, shape
+        ``(n_omega,)``: the collar's and any user's rate (`user_rate`), the one rate the
+        linear operator folds in as ``-alpha/2``. The collar's part is exactly zero in
+        the flat region and outside the active mask, where the linear operator is zero
+        anyway.
     temporal_rate : numpy.ndarray
         Power absorption coefficient on the coarse time axis, 1/m, shape ``(n_t,)``.
     temporal_rate_fine : numpy.ndarray
@@ -193,7 +245,7 @@ class Absorber:
         the physics lives. Applied as a 0/1 multiply, which is idempotent.
     reference_length : float
         The length ``ell`` in metres over which the collar profile is applied once to
-        the field. It sets the spectral rate's ceiling, ``60 / ell``.
+        the field. It sets the total spectral rate's ceiling, ``60 / ell``.
     collar_length : float or None
         The length ``ell_c`` in metres that sets the in-stage temporal collar's
         strength, whose largest rate is ``12.6 / ell_c``; it also sets the temporal
@@ -209,13 +261,21 @@ class Absorber:
         arrays; it is recorded only when ``False``. Any collar whose temporal rates
         are all zero, however it was built, is translated to no temporal absorber
         (:func:`solprop.translate.masks.temporal_rates`).
+    user_rate : numpy.ndarray or None
+        The user's share of `spectral_rate`, 1/m, shape ``(n_omega,)``, with
+        ``0 <= user_rate <= spectral_rate``: what :func:`custom_absorber` added, which
+        ``absorbed_power`` reports apart from the collar. It moves no bit of the
+        operator, which reads the total. ``None``, the default, is no user's rate, and
+        is left out of the run record, so a run without one keeps its record and its
+        hash; set, it is recorded, and two splits of one total hash apart.
 
     Raises
     ------
     GridError
         If a length is not positive and finite, the mask and the spectral rate
-        disagree in shape, a rate is negative, not finite, or above its ceiling, or
-        a collar declared spectral-only carries a temporal rate.
+        disagree in shape, a rate is negative, not finite, or above its ceiling, a
+        collar declared spectral-only carries a temporal rate, or the user's share is
+        not finite, misshaped, negative or above the total.
 
     Examples
     --------
@@ -236,6 +296,9 @@ class Absorber:
     reference_length: float
     collar_length: float | None = None
     temporal: bool = True
+    user_rate: Float[np.ndarray, " n_user_rate"] | None = field(
+        default=None, metadata={"record_none": False}
+    )
 
     def __post_init__(self) -> None:
         """Validate what the shape annotations cannot express.
@@ -279,6 +342,31 @@ class Absorber:
             msg = (
                 "a spectral-only collar (temporal=False) carries no temporal rate; "
                 "set the temporal rates to zero, or temporal=True"
+            )
+            raise GridError(msg)
+        self._check_user_rate()
+
+    def _check_user_rate(self) -> None:
+        """Check that the user's rate is a share of the total spectral rate.
+
+        Raises
+        ------
+        GridError
+            If it is misshaped, not finite, negative or above the total.
+        """
+        if self.user_rate is None:
+            return
+        share = np.asarray(self.user_rate, dtype=np.float64)
+        if share.shape != self.spectral_rate.shape or not np.all(np.isfinite(share)):
+            msg = (
+                f"user_rate must be finite with spectral_rate's shape "
+                f"{self.spectral_rate.shape}, got {share.shape}"
+            )
+            raise GridError(msg)
+        if np.any(share < 0.0) or np.any(share > self.spectral_rate):
+            msg = (
+                "user_rate is the user's share of spectral_rate, the total, so "
+                "0 <= user_rate <= spectral_rate on every bin"
             )
             raise GridError(msg)
 
@@ -526,12 +614,65 @@ def _check_collar(
             raise GridError(msg)
 
 
+def _walkoff_collar_length(grid: TimeGrid, walkoff: float) -> float:
+    r"""Return the collar length that stops a packet of the given drift.
+
+    A packet drifting steadily by ``walkoff`` over ``grid.length`` crosses the collar at
+    ``v = walkoff / length`` seconds per metre, so its field loses
+    ``integral(alpha dt) / (2 v)`` nepers. It re-enters the flat region only after both
+    edges, which meet at the window's end on the periodic axis, so both count. With
+    ``alpha = A (1 - W) / ell_c``, and setting the loss to ``Gamma``
+    (:data:`MIN_COLLAR_ATTENUATION`),
+
+    .. math::
+
+        \ell_c = \frac{L}{\Delta\tau\,\Gamma}\,\frac{A}{2}\int (1 - W)\,dt.
+
+    The integral is taken as :func:`warn_walkoff` takes it, so that the two agree on any
+    grid. For two edges of width ``w`` the Planck taper's symmetry makes it ``w``,
+    giving ``ell_c = 6.3 w L / (Gamma dtau)``.
+
+    Parameters
+    ----------
+    grid : TimeGrid
+        The grid, for its temporal collar and its propagation length.
+    walkoff : float
+        The drift over ``grid.length``, s.
+
+    Returns
+    -------
+    float
+        The collar length in metres.
+
+    Raises
+    ------
+    GridError
+        If the drift is not positive and finite, or the length it asks for is not.
+    """
+    if not (math.isfinite(walkoff) and walkoff > 0.0):
+        msg = (
+            f"walkoff must be positive and finite, got {walkoff!r}; for a collar with "
+            "no temporal part pass temporal=False instead"
+        )
+        raise GridError(msg)
+    unit_rate = temporal_collar_rate(grid.t, grid.t_collar, 1.0)
+    integral = float(np.trapezoid(unit_rate, dx=grid.dt))
+    length = (
+        0.5 * integral * grid.length / (MIN_COLLAR_ATTENUATION * walkoff)
+    ) * _WALKOFF_ROUNDING_MARGIN
+    if not (math.isfinite(length) and length > 0.0):
+        msg = f"walkoff={walkoff!r} s asks for a collar length of {length!r} m"
+        raise GridError(msg)
+    return length
+
+
 def absorber(
     grid: TimeGrid,
     *,
     boundary_N: float = DEFAULT_BOUNDARY_N,  # noqa: N803 - the established parameter name
     boundary_length: float | None = None,
     temporal: bool = True,
+    walkoff: float | None = None,
 ) -> Absorber:
     """Build the absorbing boundaries of a grid.
 
@@ -542,15 +683,43 @@ def absorber(
     boundary_N : float, optional
         Absorber strength, as the number of times the collar profile is applied to the
         field over the whole propagation; the reference length is ``length /
-        boundary_N``.
+        boundary_N``. Beside ``walkoff`` it sets the spectral collar alone.
     boundary_length : float or None, optional
-        Reference length in metres, overriding ``boundary_N``.
+        Reference length in metres, overriding ``boundary_N``. Beside ``walkoff`` it
+        sets the spectral collar alone.
     temporal : bool, optional
         ``False`` builds a **spectral-only** collar (SEP 22): its temporal rates are
         zero arrays on both time axes, the band mask and the spectral rate are as
         before, and the record says ``temporal=False``. It is translated to no
         temporal absorber, so the kernels compile no temporal pass under either
         absorber scheme. The grid is unchanged.
+    walkoff : float or None, optional
+        The steady group-delay drift, in seconds and positive, that the temporal collar
+        must stop: a packet drifting by this much over ``grid.length`` loses
+        :data:`MIN_COLLAR_ATTENUATION` nepers of field crossing the collar, counted over
+        both edges, which is the condition :func:`warn_walkoff` checks. It sets
+        ``collar_length`` to ``6.3 w L / (Gamma walkoff)`` for edges of width ``w``, a
+        length ``L`` and that attenuation ``Gamma``, and changes nothing else; ``None``,
+        the default, leaves the temporal strength to ``boundary_N``.
+
+        **It is measured over this grid's own length.** The collar's rate depends only
+        on the speed ``walkoff / grid.length``, so a slice of a run gets its parent's
+        temporal collar when given the drift of that slice: a quarter of the length, a
+        quarter of the walk-off. Handing a slice its parent's whole drift asks for a
+        collar four times stronger.
+
+        **It does not conflict with** ``boundary_N`` **or** ``boundary_length``, so
+        neither is refused beside it. They keep ``reference_length``, the spectral rate
+        and its ceiling, and ``walkoff`` sets the temporal rates and their ceiling; a
+        slice that keeps its parent's strength in both passes
+        ``boundary_length=parent.reference_length`` and its own drift.
+
+        **Refused beside** ``temporal=False``, which has no temporal collar to size.
+        **The window does not bound it**: the loss needs only the collar's width, and a
+        drift longer than the window is absorbed on its first crossing. A large value
+        costs steps instead, since an explicit method's step is limited to about
+        ``0.48 w / v``, by :func:`stable_step` under the in-stage scheme. A free-space
+        run's transverse collar is designed separately and does not read this length.
 
     Returns
     -------
@@ -560,8 +729,9 @@ def absorber(
     Raises
     ------
     GridError
-        If the reference length is not positive and finite, or either collar is too
-        narrow on its axis to be a taper.
+        If the reference length is not positive and finite, either collar is too narrow
+        on its axis to be a taper, or ``walkoff`` is not positive and finite or is given
+        with ``temporal=False``.
 
     Examples
     --------
@@ -579,12 +749,26 @@ def absorber(
     >>> spectral_only = absorber(grid, temporal=False)
     >>> float(spectral_only.temporal_rate.max()), spectral_only.temporal
     (0.0, False)
+    >>> walking = absorber(grid, walkoff=1e-12)
+    >>> bool(np.array_equal(walking.spectral_rate, boundary.spectral_rate))
+    True
+    >>> round(walking.in_stage_length / boundary.in_stage_length, 3)
+    1.023
     """
+    if walkoff is not None and not temporal:
+        msg = (
+            "walkoff sizes the temporal collar, and temporal=False has none; drop one "
+            "of the two"
+        )
+        raise GridError(msg)
     length = _reference_length(grid, boundary_N, boundary_length)
     _check_collar("spectral", grid.omega_collar, grid.omega, "rad/s")
     if temporal:
         # A spectral-only collar needs no room in time: its grid may have none.
         _check_collar("temporal", grid.t_collar, grid.t, "s")
+    # Only the temporal rates follow the walk-off: a shared length would move the
+    # spectral collar too, which SEP 21 section 5 forbids.
+    in_stage = length if walkoff is None else _walkoff_collar_length(grid, walkoff)
     spectral = collar_rate(grid.omega_window, length)
     # Outside the active mask the linear operator is zero and the nonlinear polarisation
     # is masked, so there is nothing left for a rate to absorb; leaving the capped value
@@ -593,14 +777,15 @@ def absorber(
     spectral[~band_mask] = 0.0
     boundary = Absorber(
         spectral_rate=spectral,
-        temporal_rate=temporal_collar_rate(grid.t, grid.t_collar, length)
+        temporal_rate=temporal_collar_rate(grid.t, grid.t_collar, in_stage)
         if temporal
         else np.zeros(grid.n_t),
-        temporal_rate_fine=temporal_collar_rate(grid.t_fine, grid.t_collar, length)
+        temporal_rate_fine=temporal_collar_rate(grid.t_fine, grid.t_collar, in_stage)
         if temporal
         else np.zeros(grid.n_to),
         band_mask=band_mask,
         reference_length=length,
+        collar_length=in_stage,
         temporal=temporal,
     )
     _log_summary(grid, boundary)
@@ -618,8 +803,8 @@ def no_absorber(
     What ``absorber=False`` on the keyword interfaces means (SEP 21 section 5): the
     temporal and spectral rates are zero, so no light is absorbed at either edge of
     the window, and the hard band mask still keeps the field inside the representable
-    band. The reference length is kept, so that a radial, Cartesian or planar run's
-    real-space collar, which reads it, keeps its strength.
+    band. The reference length is kept for the record; a free-space run's transverse
+    boundary is designed separately (:class:`SpatialAbsorber`) and does not read it.
 
     Parameters
     ----------
@@ -666,7 +851,8 @@ def custom_absorber(
     The spectral rate is diagonal in frequency and folded into the linear operator,
     where it is exact and free whatever its strength (ADR-007); the in-stage collars
     are explicit and their strength bounds a replayed step (SEP 22 section 4.6). The
-    user's rate is therefore added to the collar's spectral rate, and the collar's
+    user's rate is therefore added to the collar's spectral rate, kept apart as
+    ``user_rate`` for the statistic that reports it, and the collar's
     temporal rates, band mask and in-stage strength are kept as they are: its
     ``collar_length`` is the collar's own ``in_stage_length``. Its
     ``reference_length`` stays the collar's when the summed rate fits under the
@@ -693,7 +879,8 @@ def custom_absorber(
     Returns
     -------
     Absorber
-        The collar with the summed spectral rate.
+        The collar with the summed spectral rate, and the user's share of it in
+        ``user_rate``, added to any share `collar` already holds.
 
     Raises
     ------
@@ -737,7 +924,11 @@ def custom_absorber(
     added = np.where(base.band_mask, values, 0.0)
     # A zero rate leaves the collar's own array, signed zeros and all, so the record
     # is the collar's field for field.
-    total = base.spectral_rate + added if np.any(added) else base.spectral_rate
+    rated = bool(np.any(added))
+    total = base.spectral_rate + added if rated else base.spectral_rate
+    # Rounding is monotonic, so the sum of the shares stays under the sum of the totals.
+    held = base.user_rate
+    share = held if not rated else added if held is None else held + added
     largest = float(np.max(total, initial=0.0))
     reference = base.reference_length
     if largest > MAX_ALPHA_LENGTH / reference:
@@ -749,7 +940,226 @@ def custom_absorber(
         spectral_rate=total,
         reference_length=reference,
         collar_length=base.in_stage_length,
+        user_rate=share,
     )
+
+
+def split_rate_buckets(
+    rates: Float[np.ndarray, "*shape"],
+) -> UInt8[np.ndarray, "*shape"]:
+    """Return the :class:`SplitCrossing` bucket of each walk-off rate.
+
+    Bucket ``k`` holds the rates up to ``SPLIT_RATE_TOP * 10**(-9 k / 128)``, the
+    fastest first; a rate of zero, or below the last edge, is in the last bucket, and
+    one above :data:`SPLIT_RATE_TOP` in the first, which is open-ended.
+
+    Parameters
+    ----------
+    rates : numpy.ndarray
+        Walk-off rates against the frame, s/m, nonnegative.
+
+    Returns
+    -------
+    numpy.ndarray
+        The buckets, ``uint8``, the shape of `rates`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from solprop.boundaries import split_rate_buckets
+    >>> split_rate_buckets(np.array([1.0, 1e-7, 5e-8, 0.0])).tolist()
+    [0, 0, 4, 127]
+    """
+    rates = np.asarray(rates, dtype=np.float64)
+    with np.errstate(divide="ignore"):
+        depth = np.log10(SPLIT_RATE_TOP / rates) * (
+            SPLIT_RATE_BUCKETS / _SPLIT_RATE_DECADES
+        )
+    depth = np.where(rates > 0.0, depth, SPLIT_RATE_BUCKETS)
+    return np.clip(np.ceil(depth - 1.0), 0, SPLIT_RATE_BUCKETS - 1).astype(np.uint8)
+
+
+def split_bucket_rates(
+    fastest: float = SPLIT_RATE_TOP,
+) -> Float[np.ndarray, " n_buckets"]:
+    """Return each :class:`SplitCrossing` bucket's rate, its upper edge, s/m.
+
+    Parameters
+    ----------
+    fastest : float, optional
+        The fastest rate the bins reach, s/m: the open first bucket's rate when it
+        exceeds :data:`SPLIT_RATE_TOP`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Shape ``(SPLIT_RATE_BUCKETS,)``, the fastest first.
+
+    Examples
+    --------
+    >>> from solprop.boundaries import split_bucket_rates
+    >>> rates = split_bucket_rates()
+    >>> float(rates[0]), len(rates)
+    (1e-07, 128)
+    """
+    k = np.arange(SPLIT_RATE_BUCKETS)
+    rates = SPLIT_RATE_TOP * 10.0 ** (-k * _SPLIT_RATE_DECADES / SPLIT_RATE_BUCKETS)
+    rates[0] = max(SPLIT_RATE_TOP, fastest)
+    return rates
+
+
+@dataclass(frozen=True)
+class SplitCrossing:
+    """The split temporal collar's crossing limit, read from where the light is.
+
+    Under the ``"split_step"`` scheme a step whose walk-off exceeds the collar's width
+    can carry light through it and round the periodic window undamped. Each
+    ``(mode, frequency)`` bin walks at ``|d(beta - beta_frame)/d omega|``, held here
+    as its bucket (:func:`split_rate_buckets`); a state's occupancy is its energy per
+    bucket, and the limit ``factor * width / rate`` takes the rate of the fastest
+    bucket left once the fastest holding at most ``share`` of the energy are set
+    aside. Translation reads it from the launch (`launch_limit`), which holds
+    ``dz_max`` and a fixed schedule; the boundary monitor reads it again from the
+    state at every check, and the steps after it are capped there.
+
+    Attributes
+    ----------
+    buckets : numpy.ndarray
+        Each bin's bucket, ``uint8``, shape ``(n_modes, n_omega)``: the fastest of its
+        batch members, polarisations and positions along the guide; evanescent and
+        inactive bins in the last.
+    width : float
+        The collar's width at its narrower edge, s.
+    launch_limit : float
+        The limit the launch's occupancy gives, m.
+    fastest : float
+        The fastest rate a bin reaches, s/m: the open first bucket's rate when above
+        :data:`SPLIT_RATE_TOP`, so that no bin is counted slower than it walks.
+    factor : float
+        ``c``, :data:`SPLIT_CROSSING`.
+    share : float
+        :data:`SPLIT_OCCUPIED_SHARE`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from solprop.boundaries import SplitCrossing, split_rate_buckets
+    >>> buckets = split_rate_buckets(np.array([[1e-12, 1e-10]]))
+    >>> crossing = SplitCrossing(buckets, 1e-13, launch_limit=0.05)
+    >>> occupancy = crossing.occupancy(np.array([[[[1.0, 1e-4]]]], dtype=complex))
+    >>> # The fast bin holds 1e-8 of the energy and is set aside: the slow bin's limit,
+    >>> # 50 mm at 1e-12 s/m, a little shorter at its bucket's edge.
+    >>> round(crossing.limit(occupancy) * 1e3, 1)
+    49.1
+    """
+
+    buckets: UInt8[np.ndarray, "n_modes n_omega"]
+    width: float
+    launch_limit: float = math.inf
+    fastest: float = SPLIT_RATE_TOP
+    factor: float = SPLIT_CROSSING
+    share: float = SPLIT_OCCUPIED_SHARE
+
+    def __post_init__(self) -> None:
+        """Freeze the table."""
+        buckets = np.array(self.buckets, dtype=np.uint8)
+        buckets.setflags(write=False)
+        object.__setattr__(self, "buckets", buckets)
+
+    def occupancy(
+        self,
+        field_spectrum: Complex[np.ndarray, "n_batch n_modes n_pol n_omega"],
+        columns: Float[np.ndarray, " n_modes"] | None = None,
+    ) -> Float[np.ndarray, " n_buckets"]:
+        """Return a state's energy per bucket, on the host: the reference reduction.
+
+        Parameters
+        ----------
+        field_spectrum : numpy.ndarray
+            A state, canonical layout.
+        columns : numpy.ndarray or None, optional
+            The modes' quadrature weights, ``None`` for unit weights.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(SPLIT_RATE_BUCKETS,)``, in the state's units of energy.
+        """
+        # In the state's own precision, without a state-sized temporary: the shares
+        # are what the limit reads.
+        spectrum = np.asarray(field_spectrum)
+        re, im = np.real(spectrum), np.imag(spectrum)
+        energy = np.einsum("bmpw,bmpw->mw", re, re) + np.einsum("bmpw,bmpw->mw", im, im)
+        if columns is not None:
+            energy = energy * np.asarray(columns, dtype=np.float64)[:, None]
+        return np.bincount(
+            self.buckets.ravel(), weights=energy.ravel(), minlength=SPLIT_RATE_BUCKETS
+        ).astype(np.float64)
+
+    def limit(self, occupancy: Float[np.ndarray, " n_buckets"]) -> float:
+        """Return the crossing limit of an occupancy, m.
+
+        Parameters
+        ----------
+        occupancy : numpy.ndarray
+            Energy per bucket (:meth:`occupancy`).
+
+        Returns
+        -------
+        float
+            ``factor * width / rate`` at the fastest bucket left once the fastest
+            holding at most ``share`` of the energy are set aside; ``inf`` for no light.
+        """
+        occupancy = np.asarray(occupancy, dtype=np.float64)
+        total = float(occupancy.sum())
+        if not total > 0.0:
+            return math.inf
+        cumulative = np.cumsum(occupancy)
+        index = int(np.searchsorted(cumulative, self.share * total, side="right"))
+        rate = float(
+            split_bucket_rates(self.fastest)[min(index, SPLIT_RATE_BUCKETS - 1)]
+        )
+        return split_crossing_step(rate, self.width, self.factor)
+
+
+def split_crossing_step(
+    rate: float, width: float, factor: float = SPLIT_CROSSING
+) -> float:
+    """Return the longest step the split collar holds a walking pulse to, m.
+
+    ``factor * width / rate``: a component whose group delay walks ``rate`` seconds
+    per metre against the frame moves ``factor`` of the collar's ``width`` in one step
+    at most, so it cannot cross the collar between two of the split's applications.
+    Translation holds an adaptive run's ``dz_max`` to it and refuses a fixed schedule
+    past it, under the ``"split_step"`` scheme; the in-stage scheme absorbs inside
+    every stage and needs no such limit.
+
+    Parameters
+    ----------
+    rate : float
+        The fastest walk-off against the frame, s/m, nonnegative: the rate
+        :meth:`SplitCrossing.limit` reads from an occupancy.
+    width : float
+        The temporal collar's width at its narrower edge, s.
+    factor : float, optional
+        ``c``, the share of the width one step may walk; :data:`SPLIT_CROSSING`.
+
+    Returns
+    -------
+    float
+        The step, m; ``inf`` when nothing walks.
+
+    Examples
+    --------
+    >>> from solprop.boundaries import split_crossing_step
+    >>> round(split_crossing_step(1.7e-12, 212e-15), 4)
+    0.0624
+    >>> split_crossing_step(0.0, 212e-15)
+    inf
+    """
+    if not rate > 0.0:
+        return math.inf
+    return factor * width / rate
 
 
 def stable_step(temporal_rate: Float[np.ndarray, " n_t"]) -> float:
@@ -1022,8 +1432,12 @@ def warn_walkoff(
         f"the temporal absorber attenuates a packet walking off by "
         f"{group_delay_span * 1e15:.3g} fs over {grid.length:.3g} m by only "
         f"{crossing:.2g} nepers, below the {MIN_COLLAR_ATTENUATION:.2g} that stops it "
-        f"wrapping around the time window; widen trange, or raise boundary_N above "
-        f"{boundary_N * MIN_COLLAR_ATTENUATION / max(crossing, 1e-30):.3g}",
+        "wrapping around the time window; widen trange, give absorber(grid, walkoff="
+        # Half a percent up, so that the three digits shown never fall below the span
+        # and a collar built from this very text passes.
+        f"{group_delay_span * 1.005:.3g}) to strengthen the temporal collar alone, or, "
+        "strengthening the spectral collar too, raise boundary_N above "
+        f"{grid.length / length * MIN_COLLAR_ATTENUATION / max(crossing, 1e-30):.3g}",
         SolpropWarning,
         stacklevel=2,
     )

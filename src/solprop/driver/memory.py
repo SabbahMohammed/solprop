@@ -49,12 +49,15 @@ import math
 import os
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
+import numpy as np
+
 from solprop.backends.memory import (
     MemoryEstimate,
+    _held_bytes,
     estimate_guide_memory,
     estimate_memory,
     low_storage_memory,
@@ -64,7 +67,7 @@ from solprop.exceptions import DriverError, MemoryBudgetError, MemoryBudgetWarni
 from solprop.grid import TimeGrid
 from solprop.modes.guide import ModalGuide
 from solprop.modes.material import JsonValue
-from solprop.output.schema import FieldRetention, Output, PlaneStore
+from solprop.output.schema import CheckpointOutput, FieldRetention, Output, PlaneStore
 from solprop.stats import CATALOGUE
 from solprop.stepper.low_storage import LowStorageRungeKutta
 from solprop.translate.problem import KernelProblem
@@ -118,6 +121,10 @@ _ADVICE = {
     "base": "fewer time samples, modes or nodes, or propagator_mode='recompute'",
     "adams_history": "integrator=RungeKutta(), which keeps no Adams history",
     "output": "an HDF5 file as the output instead of memory, or fewer save planes",
+    "simulation_input": "a solprop pulse rather than an array input, which needs no "
+    "copy of its own, or a broadcast input (numpy.broadcast_to)",
+    "initial_field": "a broadcast input (numpy.broadcast_to), of which the translated "
+    "problem copies only the block it repeats; any other input is copied whole",
 }
 
 _COUNTED_PER_PLANE = 3
@@ -279,21 +286,26 @@ def resolve_memory_budget(memory_budget: int | str | None = None) -> MemoryLimit
     )
 
 
-def admit_memory(
+def admit_memory(  # noqa: PLR0913 - the run's parts, each charged by its own group
     problem: KernelProblem,
     backend: str,
     memory_budget: int | str | None = None,
     *,
     output: Output | None = None,
     retention: FieldRetention | None = None,
+    inputs: Sequence[np.ndarray] = (),
+    held_plane: bool = True,
 ) -> MemoryAdmission:
     """Estimate a run's persistent memory and admit it against its budget.
 
     Called before the backend is constructed, so nothing the backend would allocate
-    exists yet. The general route's reference is already resident, in the translated
-    problem, and is counted with the rest. Given the run's output, what the output
-    keeps in memory is added as the group ``output``: an in-memory store at its
-    planned capacity, nothing for a file.
+    exists yet. The general route's reference and the initial field are already
+    resident, in the translated problem, and are counted with the rest. Given the
+    run's output, what the output keeps in memory is added as the group ``output``: an
+    in-memory store at its planned capacity, nothing for a file. Given the arrays the
+    simulation holds for its input, those the problem does not share are added as the
+    resident group ``simulation_input``: on a modal route, the simulation's copy beside
+    the converted launch the problem holds.
 
     Parameters
     ----------
@@ -311,6 +323,14 @@ def admit_memory(
     retention : solprop.output.schema.FieldRetention or None, optional
         Which planes keep their field, resolved against the run's planes; ``None``,
         every plane. The output is charged the field on the kept planes only.
+    inputs : collections.abc.Sequence of numpy.ndarray, optional
+        The arrays the simulation holds for its input
+        (``Simulation._held_inputs``); each buffer is charged once, and not at all
+        when the problem's initial state shares it. Empty by default.
+    held_plane : bool, optional
+        The run's ``SimulationSettings.held_plane``. A low-storage run that keeps fewer
+        than every field is charged one more volume for the plane it holds unless this
+        is ``False`` or `output` has nowhere to put a checkpoint.
 
     Returns
     -------
@@ -351,8 +371,15 @@ def admit_memory(
     solprop.exceptions.MemoryBudgetError: ...
     """
     own = estimate_memory(problem, backend)
-    estimate = _with_held_plane(
-        _with_output(own, problem, output, retention), problem, retention
+    holds = held_plane and (output is None or isinstance(output, CheckpointOutput))
+    estimate = _with_inputs(
+        _with_held_plane(
+            _with_output(own, problem, output, retention),
+            problem,
+            retention if holds else None,
+        ),
+        problem,
+        inputs,
     )
     _admit_history(
         estimate,
@@ -360,6 +387,41 @@ def admit_memory(
         march=estimate.total - own.total + low_storage_memory(problem, backend),
     )
     return _admitted(estimate, memory_budget, "the run's persistent memory")
+
+
+def _with_inputs(
+    estimate: MemoryEstimate, problem: KernelProblem, inputs: Sequence[np.ndarray]
+) -> MemoryEstimate:
+    """Return the estimate with the simulation's own input arrays added to it.
+
+    Parameters
+    ----------
+    estimate : solprop.backends.memory.MemoryEstimate
+        The run's estimate so far.
+    problem : solprop.translate.problem.KernelProblem
+        The translated problem, whose initial state is already counted.
+    inputs : collections.abc.Sequence of numpy.ndarray
+        The arrays the simulation holds for its input.
+
+    Returns
+    -------
+    solprop.backends.memory.MemoryEstimate
+        The estimate with a resident ``simulation_input`` group when an input array
+        is a buffer of its own; otherwise the estimate unchanged.
+    """
+    counted = [problem.initial.field0]
+    held = 0
+    for values in inputs:
+        if not any(np.may_share_memory(values, other) for other in counted):
+            counted.append(values)
+            held += _held_bytes(values)
+    if not held:
+        return estimate
+    return replace(
+        estimate,
+        groups={**estimate.groups, "simulation_input": held},
+        resident=estimate.resident + held,
+    )
 
 
 def _with_output(
@@ -418,7 +480,7 @@ def _with_held_plane(
 
     A low-storage run that keeps fewer than every field holds the state of its last
     field-free plane, one volume, so a step abandoned in flight can still be
-    checkpointed (SEP 22, Q14).
+    checkpointed (SEP 22, Q14), unless it was asked not to or cannot checkpoint.
 
     Parameters
     ----------
@@ -427,7 +489,8 @@ def _with_held_plane(
     problem : solprop.translate.problem.KernelProblem
         The translated problem.
     retention : solprop.output.schema.FieldRetention or None
-        Which planes keep their field; ``None``, every plane.
+        Which planes keep their field; ``None``, every plane, or a run that holds no
+        plane whichever they are.
 
     Returns
     -------
@@ -577,7 +640,9 @@ def _admit_history(
     warn: under the default integrator it would page or fail to allocate. The limits
     are the machine's (an undeclared budget) and the accelerator's free memory less
     :data:`DEFAULT_HEADROOM`; a declared budget is checked by :func:`_admitted`, a
-    ``"warn:"`` one only warns, and ``"none"`` declares no check.
+    ``"warn:"`` one only warns, and ``"none"`` declares no check. The accelerator is
+    charged the estimate less what is held on the host alone, the translated problem's
+    initial field and the simulation's own input.
 
     Parameters
     ----------
@@ -602,7 +667,7 @@ def _admit_history(
         return
     limits = []
     if budget.source == "machine":
-        limits.append((budget.limit, "the machine's memory less its headroom"))
+        limits.append((budget.limit, "the machine's memory less its headroom", 0))
     free = available_device_memory(estimate.backend)
     if free is not None:
         limits.append(
@@ -610,27 +675,31 @@ def _admit_history(
                 math.floor(free * (1.0 - DEFAULT_HEADROOM)),
                 f"the accelerator's free memory less its headroom ({format_bytes(free)}"
                 " free)",
+                int(estimate.groups.get("initial_field", 0))
+                + int(estimate.groups.get("simulation_input", 0)),
             )
         )
-    for limit, where in limits:
-        if estimate.total - history <= limit < estimate.total:
+    for limit, where, host in limits:
+        total = estimate.total - host
+        if total - history <= limit < total:
             # The simulation module imports this one.
             from solprop.driver.simulation import LOW_STORAGE_BACKENDS  # noqa: PLC0415
 
             low_storage = (
                 ""
                 if march is None
-                or march > limit
+                or march - host > limit
                 or estimate.backend not in LOW_STORAGE_BACKENDS
                 else (
                     "; or replay a fixed schedule with "
                     "integrator=LowStorageRungeKutta(), which holds three copies of "
-                    f"the state beside its scratch, estimated at {format_bytes(march)}"
+                    "the state beside its scratch, estimated at "
+                    f"{format_bytes(march - host)}"
                 )
             )
             msg = (
                 f"the run's persistent memory on {estimate.backend} is estimated at "
-                f"{format_bytes(estimate.total)}, over {where}, "
+                f"{format_bytes(total)}, over {where}, "
                 f"{format_bytes(limit)}; {format_bytes(history)} of it is the Adams "
                 "method's history. Step it with integrator=RungeKutta(), which keeps "
                 f"no history and needs fewer copies of the state{low_storage}; or "
@@ -807,9 +876,23 @@ def _over_budget(estimate: MemoryEstimate, budget: MemoryLimit, subject: str) ->
     largest = estimate.largest()
     groups = ", ".join(f"{name} {format_bytes(size)}" for name, size in largest)
     advice = "; ".join(f"{name}: {_ADVICE[name]}" for name, _ in largest)
+    held = " and ".join(
+        name
+        for group, name in (
+            ("general_reference", "the general route's reference"),
+            ("initial_field", "the initial field"),
+            ("simulation_input", "the simulation's input"),
+        )
+        if estimate.groups.get(group)
+    )
+    holder = (
+        "translated problem and the simulation"
+        if estimate.groups.get("simulation_input")
+        else "translated problem"
+    )
     resident = (
-        f" ({format_bytes(estimate.resident)} of it, the general route's reference, "
-        "is already held by the translated problem)"
+        f" ({format_bytes(estimate.resident)} of it, {held}, is already held by the "
+        f"{holder})"
         if estimate.resident
         else ""
     )

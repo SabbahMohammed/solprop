@@ -56,8 +56,9 @@ hard-mask zeros, and explicitly exact zeros and no-ops.
 | `tdse` | `TDSEDescriptor` or `None` | immutable atomic specification, resolved response lattice and scientific identity; section 5 |
 | `current_numerator` | `(n_modes,n_pol,n_omega) float64` or `None` | independent current coefficient numerator, `-crop_scale/(2 epsilon_0 c)` on active bins; divided by the stage real effective index |
 | `flux` | `FluxPlan` or `None` | a spatial run's plane measure ([SEP 34](seps/archive/sep-0034-medium-flux.md), `translate.spatial.FluxPlan`): `base`, the separable coefficients with the entrance material square, whose principal root gives the dimensionless axial admittance `c k_z/omega` of every column and bin (zero on nonpropagating, inactive and nonpositive-frequency bins); `material`, the z table of the complex material square `(omega n/c)²` for a varying radial medium, `None` for a uniform one; and `admission`, the varying path's adiabatic certificate. `at(z)` gives a plane's coefficients. Every spatial statistic weights its columns by the real admittance at its plane (energy, spectra, absorbed powers) or synthesises the closure `G` with the complex one (fluence, intensities, on-axis spectrum). Required with spatial geometry and `None` otherwise; its active mask equals `grids.active_mask`. Added in version 35 |
-| `precision` | `translate.precision.Precision` | the arithmetic the run is held in ([SEP 33](seps/archive/sep-0033-single-precision-mlx.md), ADR-054): `state` and `source`, each `"double"` or `"single"` and equal (a mixed record is refused). Every table here is binary64 either way; a backend that admits single precision narrows its tables on upload, each with its own power-of-two exponent, and holds the state at the launch's exact power-of-two scale. Under `"single"`, `validate` refuses the general modal route, the hybrid planar kind, coupled flows, TDSE responses, the dispersive electronic response, the far-field statistics and noise models; `numba_cpu` and `native` refuse a single-precision problem by name. Default `DOUBLE`. Added in version 36 |
+| `precision` | `translate.precision.Precision` | the arithmetic the run is held in ([SEP 33](seps/archive/sep-0033-single-precision-mlx.md), ADR-054): `state` and `source`, each `"double"` or `"single"` and equal (a mixed record is refused). Every table here is binary64 either way; a backend that admits single precision narrows its tables on upload, each with its own power-of-two exponent, and holds the state at the launch's exact power-of-two scale. Under `"single"`, `validate` refuses the general modal route, the hybrid planar kind, coupled flows, TDSE responses, the dispersive electronic response, the far-field statistics and noise models; `native` refuses a single-precision problem by name. Default `DOUBLE`. Added in version 36 |
 | `transverse` | `SpatialAbsorberDesign` or `None` | a free-space run's resolved transverse boundary ([SEP 40](seps/archive/sep-0040-transverse-absorbing-boundaries.md), `spatial_absorber.SpatialAbsorberDesign`), host-side: the safety ramp's rate per column, which the separable operator carries as `kperp_rate` (the dense operator radially), and a requested collar's rate on the nodes, which the geometry carries as `absorber_rate`, with its band, strength, crossing step and design check. A backend meets it only through those fields and the stepper's `dz_max`, held to the collar's crossing limit and to the ramp's exponent budget. `None` for no transverse boundary and on modal routes. Added in version 41 |
+| `split_crossing` | `SplitCrossing` or `None` | the split temporal collar's crossing limit (`boundaries.SplitCrossing`): `buckets`, each `(mode, frequency)` bin's walk-off bucket as `(n_modes,n_omega) uint8` (the fastest of its batch members, polarisations and positions, a coupled flow's channels with the generator's diagonal added to the shared carrier; `boundaries.split_rate_buckets`), the fastest rate a bin reaches `fastest` (the open first bucket's rate), the collar's `width` and the launch's limit `launch_limit`, which holds an adaptive `dz_max` and a fixed schedule at translation. A backend that reads the boundary monitor under the `"split_step"` scheme returns the state's energy per bucket with every reading (`BoundaryEnergies.occupancy`; native: `bind_occupancy`, then `monitor_reading`'s ten numbers followed by the 128 buckets); the monitor turns it into a cap on the steps until the next check (`StepDriver._split_capped`, the native Adams march's required `step_cap` bound), and a fixed schedule whose steps before the next check exceed it, at a check or when a resumed state is watched, stops with a `BoundaryError`. `None` under the in-stage scheme or without a temporal collar. Added in version 43 |
 `KernelProblem` also carries one **property**, which is not a field and so not a row
 above: `device_ready` is true when Φ (§3) and the prefactor (§5) are each a weighted sum
 of a fixed set of arrays, and false when either took the z table.
@@ -82,8 +83,7 @@ about the representation. It is the arithmetic of `delta_phi` and
 rounding.
 
 **The z table has no such split** — its evaluation is a Clenshaw pass over an array of the
-state's size times the degree. NumPy evaluates it directly;
-Numba uses preallocated host stage arrays and the same Clenshaw order. The native CPU
+state's size times the degree. NumPy evaluates it directly. The native CPU
 build holds the coefficients resident and evaluates the table at each native call's
 distinct positions into term slots, which the stage weights then select (`+-1` for an
 increment, one-hot for a value), so the bundle's arithmetic is unchanged and no field of
@@ -94,7 +94,7 @@ expansion. A
 total-degree expansion is not part of the contract: it failed the joint memory and
 build-cost criterion on the short fixture.
 
-The current version is kernel schema **42**
+The current version is kernel schema **46**
 (`solprop.translate.problem.KERNEL_SCHEMA_VERSION`), and the tables of this document
 describe it. A version bump that adds an optional field
 leaves every problem that does not use it unchanged, `schema_version` itself being the
@@ -266,7 +266,7 @@ The general path (PECE and the comparison variants) keeps host arrays.
 `TDSEPurpose` label so startup, predictor, corrected-field and diagnostic
 observations retain their actual provenance. This is a host seam operation:
 the shared march neither accesses NumPy's private binding nor adds atomic
-physics to a compiled backend. Numba and native continue to refuse TDSE by name.
+physics to a compiled backend. The native backend continues to refuse TDSE by name.
 A corrected-field diagnostic still needs an identical cached response or a
 separately charged solve; a predictor label never implies accepted-field data.
 If the corrected-field solve fails after candidate adoption, `_adams_restore`
@@ -280,7 +280,8 @@ host and never sees a Python `ZProfile`. Where a path is exactly zero at an inte
 too, within the table's tolerance, so the non-negativity check on density tables never
 meets the fit's rounding.
 
-`validate()` checks: all arrays finite, C-contiguous, read-only, and of the stated dtype
+`validate()` checks: all arrays finite, read-only, C-contiguous (but `initial.field0`,
+which may be a broadcast view: section 6), and of the stated dtype
 (float64, complex128, bool and intp everywhere, and `int32` at exactly three declared
 index leaves — `transform.modal_tables.region_index`,
 `responses.regional_responses.response_region` and
@@ -352,7 +353,9 @@ refuses varying media and `propagator_mode="tabulate"` explicitly.
 are `k_squared` and `k_squared_low` (complex128, material wave-number square
 and its residual in m^-2), `frame`
 (float64, frame subtraction in m^-1), `spectral_rate` (float64, nonnegative power
-absorption in m^-1), `prefactor_numerator` and `prefactor_clamped` (complex128,
+absorption in m^-1), `user_rate` (float64, the share of `spectral_rate` a custom rate
+supplies, between zero and it, read only by `absorbed_power`; zeros when there is none,
+kernel schema 45), `prefactor_numerator` and `prefactor_clamped` (complex128,
 purely imaginary, with temporal crop scaling), and `active` (bool). Each has
 `n_omega` entries. `kperp_sq` is a nonnegative float64 vector of `n_modes`
 transverse wave-number squares in m^-2; `kperp_sq_low` has the same shape and
@@ -582,7 +585,7 @@ which a declared unitary rotation leaves where it was. A flow that mixes a
 `"constant_schur"` section with any other, a factored generator, a `"diagonal"` section, a
 varying degree or a connection beside a constant section, and a `Phi` that took the z
 table beside a varying one, are refused by name. `numpy_ref` executes every admitted
-combination; `numba_cpu` and the native backend execute the constant-Schur and frozen-residual
+combination; the native backend executes the constant-Schur and frozen-residual
 sections and refuse a `"cf4"` section by name
 
 ## 4. Multimode transform
@@ -626,7 +629,7 @@ modal routes).
   on y alone (checked), so a backend may apply them per `(p, y)` row; its scalings
   are the y FFT's, `1` and `1/n_y`. A constant gap and constant media only; the
   operator is §3's with `kappa_sq`, and the prefactor is §3's per column.
-  `numpy_ref`, `numba_cpu` and native CPU execute it.
+  `numpy_ref` and native CPU execute it.
 - `shape`: `(n_r,)` or `(n_x, n_y)`, each dimension at least 2, except `n_y = 1` for a
   Cartesian line uniform in y (`grid.LineGrid`), whose one y sample is `y = 0` with
   `k_y = 0` and unit measure: its weights are then in m and its integrals per metre of
@@ -730,7 +733,7 @@ chunk. Rules are packed once, and all owned buffers and measured FFT plan alloca
 growth enter the memory ledger. `native` owns the corresponding resident
 streams, rules, histories and status arrays. A planned scalar status readback
 per channel/chunk rejects failed angular refinement before any current transform.
-NumPy, Numba CPU and native scan the observed envelope field afresh for population
+NumPy and native scan the observed envelope field afresh for population
 statistics. [backends.md §9](backends.md) records qualification separately for each
 execution space.
 
@@ -782,7 +785,8 @@ accumulate` for a problem declaring both a Kerr and a plasma response; `dispersi
 follows `kerr` when a dispersive electronic response is compiled; `raman_drive` joins
 it after them when a Raman response is compiled, so a gas-filled capillary with all three
 reaches `intensity, ionisation_rate, plasma_scan, plasma_current, kerr, raman_drive,
-accumulate`.
+accumulate`. `native` takes each response from its own leaf rather than from this order,
+so it refuses an order that omits a response the problem holds.
 
 **Each member of `raman_terms` is a leaf**, like a plasma channel, so its fields are not
 rows of this document; they are `undamped` (`(n_terms, n_to_doubled) float64`: each
@@ -898,15 +902,15 @@ multipliers, and the response is **not** windowed again with the other responses
 polarisation. It reads the bare field and changes no other response's source. The
 polynomial's channels are the exact per-species sum, which a backend may rewrite
 exactly -- species with equal leg bounds share their derivative fields and add their
-coefficient tables, as `numba_cpu` does -- but not approximate. The symmetric
-evaluator's mixture filter is SEP 6 §6's. `numpy_ref` and `numba_cpu` execute it on every route: the fused node path
+coefficient tables -- but not approximate. The symmetric
+evaluator's mixture filter is SEP 6 §6's. `numpy_ref` and native CPU execute it on every route: the fused node path
 (single-mode, mode-averaged multimode and radial), the Cartesian free-space, line and
 hybrid planar pipelines, and the general modal route at the nodes of each channel's
 region, on the real three-component field, beside the region tensors of
-`regional_responses` (the route has no collar). `numba_cpu` moves the multipliers off
+`regional_responses` (the route has no collar). `native` moves the multipliers off
 the nodes -- onto the modal columns, onto each chunk's columns or rows, or into the
 general route's synthesis ([backends.md
-§3.11](backends.md#311-the-dispersive-electronic-response)). `native` executes it on every
+§3.11](backends.md#311-the-dispersive-electronic-response)) -- and executes it on every
 route with the same structure ([backends.md §4](backends.md#4-native-the-compiled-cpu-and-gpu-backend-a-second-distribution)).
 
 Vector polarisation: `n_pol == 2` selects the vector-isotropic Kerr form; tensor responses
@@ -938,7 +942,7 @@ a z table, an expansion in the scalar parameters, a constant — without a backe
 noticing.
 
 Each plasma channel also carries `label`, `density` and `electrons_per_event`, which is
-exactly `1.0` (single ionisation) or, since kernel schema 42, `0.0`: a **neutral channel**, whose
+exactly `1.0` (single ionisation) or, since kernel schema 46, `0.0`: a **neutral channel**, whose
 events deplete the population and pay `ionisation_potential` each through the loss
 current but free no electron, as strong-field dissociation into neutral fragments does. A
 backend forms the free-current weight `rho f (e^2/m_e) electrons_per_event`, reading the
@@ -994,7 +998,7 @@ stepper's decision on the latest trial. The reference backend calls it from its
 step record (`_record`), which every Adams attempt reaches, rejected or accepted;
 it changes no step, charge or reservation. None of this is part of the protected
 `StepDriver` surface or the kernel problem, which compiled backends see, so it is
-outside the kernel schema: Numba and the native backend refuse TDSE by name and never hold a
+outside the kernel schema: the native backend refuses TDSE by name and never holds a
 binding.
 
 The backend independently projects macroscopic P and J with the existing modal
@@ -1045,11 +1049,22 @@ The initial-state fields below are independent of that optional binding.
 
 | field | shape / dtype | meaning |
 |---|---|---|
-| `field0` | `(n_batch, n_modes, n_pol, n_omega) complex128` | initial state in the lab frame, FFT convention |
+| `field0` | `(n_batch, n_modes, n_pol, n_omega) complex128` | initial state in the lab frame, FFT convention; read-only, and C-contiguous unless it is a zero-stride broadcast view (below) |
 | `noise0` | same or `None` | modified shot-noise realisation |
 | `noise_model` | `"none" \| "input" \| "modified"` | |
 | `batch_params` | dict of `(n_batch,) float64` | per-member scalars recorded in the output; per-member table indices where tables differ |
 | `z` | `float` | absolute initial position in m, non-negative and before the first requested save; true-power input is normalised at this position |
+
+No kernel indexes `field0`: `StepDriver.set_initial` accepts a state of any strides and
+copies it contiguous into the backend's own state, so since version 42 `field0` may be a
+zero-stride broadcast view. Every array of `Initial` is the problem's own, so that
+nothing a caller does afterwards to an array it passed changes the problem, and the
+caller's array is never frozen: the state, the noise and the batch parameters are
+copied; a broadcast state (as from `numpy.broadcast_to`) copies only the block it
+repeats, converted to complex128, and broadcasts that copy; and an array the problem
+already holds, or one the translation built for it, is taken without a second copy.
+`estimate_memory` counts what is held as its `initial_field` group (`backends.md`
+section 8).
 
 ## 7. Stepper settings and schedule
 
@@ -1057,22 +1072,28 @@ The initial-state fields below are independent of that optional binding.
 |---|---|---|
 | `tableau` | frozen dataclass | `solprop.stepper.tableau.Tableau`: nodes, matrix, solution weights, error weights `b − b̂`, orders, FSAL flag |
 | `controller` | frozen dataclass | `solprop.stepper.controller.PIController`: `rtol`, `atol`, `safety`, `max_factor`, `min_factor`, `beta1`, `beta2`, `lag`, `reject_free`, `estimator_order`, and `weights` (`None` for the weak norm, a `(n_omega,)` array for the weighted one). The tolerances and the norm choice live here and nowhere else. |
-| `dz_min`, `dz_max`, `dz_init` | float | caps on the controller's proposal; `dz_min` defaults to `solprop.stepper.controller.default_dz_min` of the run length and never applies to a landing step |
+| `dz_min`, `dz_max`, `dz_init` | float | caps on the controller's proposal; `dz_min` defaults to `solprop.stepper.controller.default_dz_min` of the run length and never applies to a landing step. Under the `"split_step"` scheme `assemble` holds `dz_max` to the launch's crossing limit and refuses a schedule past it (`split_crossing`, §1) |
 | `stretch` | float | landing stretch factor (`StepTargets.stretch`), default 1.1, equal to the controller's default growth cap but independent of it; 1 switches it off |
 | `schedule` | `(n_steps,) float64` or `None` | fixed schedule to replay (lockstep batches require it); its edges must contain every save plane and hard kink, which `FixedSchedule.uniform` guarantees for a plain fixed-step run |
 | `save_planes` | `(n_z,) float64` | z positions the driver will ask for; steps land on them unless `interpolate_planes` is set |
-| `propagator_mode` | `"auto" \| "tabulate" \| "recompute"` | ADR-004 and [backends.md §3.6](backends.md). `"auto"` is the default and is the backend's own choice, resolved at construction and written into the run's `backend` metadata group: `tabulate` for `numpy_ref` and `recompute` for `numba_cpu` on a modal problem; `recompute` on every backend for a separable free-space operator, whose increment `D (z₂ − z₁)` is exact. Under the low-storage march `tabulate` is one volume of `exp(h D / 2)` reused while the step holds (a varying operator's `P` and `Q` for the step), admitted on the free and planar kinds too, and `"auto"` resolves to `tabulate` for a constant operator and `recompute` for a varying one (SEP 24 §4.3), and to `recompute` on a native device build, where an extra field read costs more than the exponential |
-| `integrator` | `Multistep \| LowStorageRungeKutta \| None` | The method stepping the problem instead of the tableau, or `None` for the Runge-Kutta march. `Multistep` ([SEP 13](seps/archive/sep-0013-expensive-response-steppers.md), [SEP 16](seps/archive/sep-0016-unified-multistep.md)) is the Adams march in its exponential or interaction formulation, with an optional carrier frame (`carrier_frame`, [SEP 35](seps/archive/sep-0035-carrier-frame-exponential-adams.md), added in version 37: `"off"` or `"scalar"`, the latter on `numpy_ref`, `numba_cpu` and native CPU builds and refused by name elsewhere); it runs on `numpy_ref`, `numba_cpu` and Kokkos on every diagonal-flow route, and beside the constant-Schur and frozen-residual coupled flows in the exponential formulation; with a `schedule` it replays the schedule's steps (`AdamsMarch._replay_to`); TDSE remains NumPy-only. `LowStorageRungeKutta` ([SEP 24](seps/archive/sep-0024-low-storage-interaction-picture-runge-kutta.md)) is RK4 in the midpoint interaction picture in three registers: it replays a `schedule` and nothing else, records the norm 0.0 ("not estimated"), refuses a coupled flow, the TDSE response, interpolated planes and a step past RK4's negative-real interval 2.785, and runs on `numpy_ref`, `numba_cpu` and solprop-native (a resident engine whose step is one native call) |
+| `propagator_mode` | `"auto" \| "tabulate" \| "recompute"` | ADR-004 and [backends.md §3.6](backends.md). `"auto"` is the default and is the backend's own choice, resolved at construction and written into the run's `backend` metadata group: `tabulate` for `numpy_ref` and `recompute` for `native` on a modal problem; `recompute` on every backend for a separable free-space operator, whose increment `D (z₂ − z₁)` is exact. Under the low-storage march `tabulate` is one volume of `exp(h D / 2)` reused while the step holds (a varying operator's `P` and `Q` for the step), admitted on the free and planar kinds too, and `"auto"` resolves to `tabulate` for a constant operator and `recompute` for a varying one (SEP 24 §4.3), and to `recompute` on a native device build, where an extra field read costs more than the exponential |
+| `integrator` | `Multistep \| LowStorageRungeKutta \| None` | The method stepping the problem instead of the tableau, or `None` for the Runge-Kutta march. `Multistep` ([SEP 13](seps/archive/sep-0013-expensive-response-steppers.md), [SEP 16](seps/archive/sep-0016-unified-multistep.md)) is the Adams march in its exponential or interaction formulation, with an optional carrier frame (`carrier_frame`, [SEP 35](seps/archive/sep-0035-carrier-frame-exponential-adams.md), added in version 37: `"off"` or `"scalar"`, the latter on `numpy_ref` and native CPU builds and refused by name elsewhere); it runs on `numpy_ref` and Kokkos on every diagonal-flow route, and beside the constant-Schur and frozen-residual coupled flows in the exponential formulation; with a `schedule` it replays the schedule's steps (`AdamsMarch._replay_to`); TDSE remains NumPy-only. `LowStorageRungeKutta` ([SEP 24](seps/archive/sep-0024-low-storage-interaction-picture-runge-kutta.md)) is RK4 in the midpoint interaction picture in three registers: it replays a `schedule` and nothing else, records the norm 0.0 ("not estimated"), refuses a coupled flow, the TDSE response, interpolated planes and a step past RK4's negative-real interval 2.785, and runs on `numpy_ref` and solprop-native (a resident engine whose step is one native call) |
 | `interval_cap` | bool | whether a step is capped at the width of the operator-table interval it starts in. `assemble` turns it off on the diagonal-flow routes and on for a coupled flow or a reject-free controller, unless set ([SEP 14](seps/archive/sep-0014-stepper-efficiency.md) §4.1) |
 | `auto_init` | bool | whether the start-up rule takes the step after the first from the first step's own scaled norm (`PIController.start_factor`, at most 100 times `dz_init`). Set by the convenience interfaces when no `dz_init` is given; off for a coupled flow or a reject-free controller ([SEP 14](seps/archive/sep-0014-stepper-efficiency.md) §4.2) |
 | `interpolate_planes` | bool | steps across the save planes and observes each inside its accepted step, through DOPRI5's continuous extension or, with an `integrator`, the Adams march's own polynomial (ADR-039); the end of the run and the hard kinks are still landed on. Refused with a schedule, a Runge-Kutta tableau without an extension, the per-step collar, a coupled flow and the `modified` noise |
 | `step_planes` | int | a positive `k` also saves the end of every `k`-th accepted step since the load: the shared march returns from `propagate_to` there, short of its target, and the driver saves the plane and asks for the target again (ADR-039). `0` never stops short |
 
+**The finish's input is on the band.** Under the split-step absorber scheme the reference
+masks before and after the temporal absorber, and native masks only after it. With content
+off the band they differ by 1.09e-8 against a 3.2e-12 bound; on the band, by 7.6e-16. No march
+hands the finish such a state, so a change that could is a change to this contract. A strict
+xfail in `tests/backends/test_native_planar_statistics.py` records the difference.
+
 ## 8. Statistics requests
 
 | field | type | meaning |
 |---|---|---|
-| `stats_spec` | frozen dataclass | `solprop.stats.StatsSpec`: which statistics, energy windows (`(n_windows, 2)` in ω), periodic subset and period, validated against the catalogue at construction; and the far-field tables of [SEP 23](seps/archive/sep-0023-far-field-aperture-spectra.md), `apertures` (an `ApertureSet`: centres, diameters, distances, edges, profile, weighting, labels) and `spectral_regions` (`(n_regions, 4)` boxes of physical transverse wavevector in rad/m, the one leaf whose entries may be infinite), read only when a name that uses them is requested, so a backend that does not know a name refuses it rather than misreading a table. Fields of the leaf, not rows of the contract |
+| `stats_spec` | frozen dataclass | `solprop.stats.StatsSpec`: which statistics, energy windows (`(n_windows, 2)` in ω), periodic subset and period, validated against the catalogue at construction; and the far-field tables of [SEP 23](seps/archive/sep-0023-far-field-aperture-spectra.md), `apertures` (an `ApertureSet`: centres, diameters, distances, edges, profile, weighting, labels, and from schema 45 the optional shapes, profiles and extents, which a record leaves out while they are unset) and `spectral_regions` (`(n_regions, 4)` boxes of physical transverse wavevector in rad/m, the one leaf whose entries may be infinite), read only when a name that uses them is requested, so a backend that does not know a name refuses it rather than misreading a table. Fields of the leaf, not rows of the contract |
 
 The `periodic` subset and its `period` are read **when the backend is built**, not when a
 run is started: the shared step loop arms the between-planes channel from
@@ -1107,7 +1128,10 @@ diverged field-free run is caught by the step loop's finite-norm rule and the
 statistics, `step_history` (arrays of z, h, error norm, accepted flag, wall time since the
 last observation; recorded whether the run was adaptive or replayed a schedule, since the
 embedded estimate is computed either way), `n_steps`, `n_rejected`, and `step_stats`. `stats()` returns a dict of small host arrays
-keyed by statistic name with a leading batch axis.
+keyed by statistic name with a leading batch axis. Nothing writes to an observation's
+arrays again, the backend included: `run_problem` hands them to the output without a copy,
+and a handler may keep them. The array-backed state of a host backend is observed as it is
+and frozen, so its next step replaces it rather than accepting in place.
 
 `step_stats` is a `StepStats`: `z` `(n_rows,)` and `step` `(n_rows,)` — the index of the
 accepted step each row was taken after, into *this* observation's `step_history`, which

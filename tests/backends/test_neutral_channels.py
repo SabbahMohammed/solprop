@@ -8,7 +8,7 @@ A neutral channel (``electrons_per_event=0``) shares its population's exposure s
 loss current with an ionising one and adds no free-electron current and no electrons.
 On ``numpy_ref``, the oracle, the shared current of a neutral and an ionising channel is
 the sum of their separate responses and the statistics count the neutral channel's
-events but not its electrons. On ``numba_cpu`` and ``native`` the ladder of
+events but not its electrons. On ``native`` the ladder of
 ``docs/dev/backends.md`` -- one nonlinear evaluation, one step, eight steps and every
 species statistic -- is held to the rounding budgets the mixture ladder derives
 (``test_mixture_ladder.py``), for two channels (the channel loop) and for a lone neutral
@@ -102,7 +102,7 @@ def ladder_bound(grid, steps):
 def test_the_compiled_channels_carry_the_declaration():
     _, problem = neutral_case("mixture")
     ionising, neutral = problem.responses.plasma_channels
-    assert problem.schema_version == 42
+    assert problem.schema_version == 46
     assert (ionising.electrons_per_event, neutral.electrons_per_event) == (1.0, 0.0)
     assert neutral.free_current_coefficient == 0.0
     assert ionising.free_current_coefficient == ionising.charge_mass_ratio

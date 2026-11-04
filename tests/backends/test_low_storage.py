@@ -943,35 +943,6 @@ def test_a_step_past_rk4_s_interval_beside_the_spatial_collar_is_refused():
     spatial_collar_problem(first - 1, None)
 
 
-def test_numba_cpu_runs_the_march_with_no_runge_kutta_buffer(
-    soliton_problem, narrow_grid
-):
-    """A widened integrator never reads as none and runs DOPRI5 (section 6.4).
-
-    ``numba_cpu`` builds the march's resident engine (phase 2) and none of the
-    Runge-Kutta march's buffers, and its first-same-as-last switch stays off (Q13).
-    """
-    from solprop.backends.numba_cpu import NumbaCpuBackend  # noqa: PLC0415
-    from solprop.backends.numba_cpu.low_storage import NumbaLowStorage  # noqa: PLC0415
-
-    length = 0.1
-    problem = soliton_problem(
-        narrow_grid,
-        1,
-        save_planes=[length],
-        schedule=FixedSchedule.uniform(0.0, length, length / 10),
-        integrator=MARCH,
-    )
-    backend = NumbaCpuBackend(problem, grid=narrow_grid)
-    assert backend._low_storage is not None
-    assert isinstance(backend._low_storage.engine, NumbaLowStorage)
-    assert not backend._fsal
-    ledger = backend.memory_ledger()
-    for row in (*RUNGE_KUTTA_ROWS, "advanced", "exponent", "recycled_stage"):
-        assert ledger[row] == 0, row
-    backend.close()
-
-
 # --- the step in flight (section 6.2, Q6) -----------------------------------------
 
 
@@ -1358,9 +1329,6 @@ def test_a_held_plane_that_cannot_be_observed_keeps_the_original_failure(tmp_pat
 
 # --- memory (section 7.3) ------------------------------------------------------------
 
-# The Runge-Kutta march's own field-sized rows, empty under the low-storage march.
-RUNGE_KUTTA_ROWS = ("stages", "accumulator_solution", "accumulator_error")
-
 # The rows that scale with the whole state, as section 6.8 counts them.
 FIELD_ROWS = (
     "state",
@@ -1492,11 +1460,12 @@ def test_the_ledger_holds_three_registers_the_scratch_and_the_table(mode, collar
     assert sum(volumes.values()) == (5 if mode == "tabulate" else 4) * field
     # Every other row is a node chunk's, bounded by the chunk and not the state.
     assert all(size < field for row, size in ledger.items() if row not in FIELD_ROWS)
-    # The construction-free estimate is the ledger to the byte.
+    # The construction-free estimate is the ledger to the byte, beside the problem's
+    # own initial state, which no ledger holds.
     estimate = estimate_memory(problem, "numpy_ref")
     assert estimate.groups == {
         name: size for name, size in ledger_groups(ledger).items() if name != "measured"
-    }
+    } | {"initial_field": problem.initial.field0.nbytes}
 
 
 def test_the_noise_adds_one_volume_and_the_estimate_names_it():

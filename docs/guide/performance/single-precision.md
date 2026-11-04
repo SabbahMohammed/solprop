@@ -17,7 +17,9 @@ measured, the survival record below was measured on the reference implementation
 `native`; build single-precision grids
 with `fft_size="pow2"` ([grid sizes on `mlx`](#grid-sizes-on-mlx)). `numpy_ref` runs
 every route below as the reference implementation, which defines the arithmetic and
-measures it but is not fast. `numba_cpu` and `native` compute in binary64 only.
+measures it but is not fast; away from Apple silicon it is the supported way to run single
+precision, by name, because `native` computes in binary64 only
+([#342](https://github.com/LupoLab/solprop/issues/342)).
 ```
 
 ## Asking for it
@@ -88,7 +90,8 @@ interfaces. Under single precision:
 | envelope-grid plasma | yes | yes, each sample's ellipse and cycle moments in one GPU kernel |
 | radial and Cartesian free space, including a line, with their transverse collars | yes | yes |
 | gradients, tapers, loss, both temporal absorber schemes, the polarisation taper | yes | yes, where the operator is device-ready (not a z table) |
-| Runge–Kutta, the low-storage march, fixed-schedule batches | yes | yes |
+| Runge–Kutta, the low-storage march | yes | yes |
+| fixed-schedule batches through `Batch` | yes | refused |
 | the Adams integrator | refused, pending its accuracy record | refused |
 | noise models | refused (a known limitation, below) | refused |
 | the general modal route, the hybrid planar kind, coupled flows, TDSE responses, the dispersive electronic response, the far-field statistics | refused | refused |

@@ -6,6 +6,7 @@
 
 #include <Kokkos_Complex.hpp>
 #include <Kokkos_Core.hpp>
+#include <Kokkos_ScatterView.hpp>
 
 #include "solprop_native/launch.hpp"
 
@@ -81,7 +82,25 @@ struct MonitorSums {
   }
 };
 
+/** What a split-step collar's finish reads of the power it finds (solprop SEP 21,
+    ADR-057), one reduction value: the energy it takes, then the energy, the low
+    guard's, the high guard's and the collar's, which the monitor judges the
+    occupancies on. */
+struct SplitSums {
+  Kokkos::Array<double, 5> values{};
+  KOKKOS_INLINE_FUNCTION SplitSums& operator+=(const SplitSums& other) {
+    for (std::size_t slot = 0; slot < 5; ++slot)
+      values[slot] += other.values[slot];
+    return *this;
+  }
+};
+
 using ComplexView = Kokkos::View<Complex*, Layout, MemorySpace>;
+/** The histogram the boundary monitor's occupancy reading adds into, one slot per
+    walk-off bucket (solprop #440): duplicated per thread on the host, atomic on a
+    device. */
+using OccupancyScatter =
+    Kokkos::Experimental::ScatterView<double*, Layout, ExecutionSpace>;
 using ConstComplexView = Kokkos::View<const Complex*, Layout, MemorySpace>;
 using RealView = Kokkos::View<double*, Layout, MemorySpace>;
 using ConstRealView = Kokkos::View<const double*, Layout, MemorySpace>;
@@ -370,6 +389,9 @@ struct Problem {
       spatial_clamped;
   std::vector<double> spatial_kperp_sq, spatial_kperp_sq_low, spatial_frame,
       spatial_spectral_rate;
+  // solprop kernel schema 45 (#231): the user's share of the spectral rate, read only
+  // by `absorbed_power`; the operator takes the total.
+  std::vector<double> spatial_user_rate;
   std::vector<double> spatial_absorber_rate;
   // solprop kernel schema 31 (SEP 22 phase 2): a transverse collar's power rate per
   // column, added to the field attenuation on active bins; zeros leave the operator.
@@ -486,7 +508,7 @@ struct Problem {
   std::vector<double> raman_undamped;
   std::vector<double> raman_tensor_weights;
   // The free current's constant, e^2/m_e times the electrons each event frees:
-  // zero for a neutral channel (solprop kernel schema 42), whose events pay
+  // zero for a neutral channel (solprop kernel schema 46), whose events pay
   // ionisation_potential through the loss current and free no charge.
   double charge_mass_ratio{};
   double ionisation_potential{};
@@ -512,7 +534,7 @@ struct Problem {
   }
   // Channel-major rows: log_min, d_log, field_min, field_max, rate_max,
   // interval count, coefficient offset, the free current's constant (e^2/m_e
-  // times the electrons per event, zero for a neutral channel, schema 42) and the
+  // times the electrons per event, zero for a neutral channel, schema 46) and the
   // energy per event.
   std::vector<double> channel_parameters, channel_coefficients;
   std::size_t n_raman_components{1};
@@ -726,16 +748,24 @@ public:
    * Bind solprop's boundary monitor (SEP 21): its four time weights, row-major
    * `(4, n_t)`, and its columns' quadrature by mode (empty for unit weights). From
    * here on each split-step finish adds what it takes to an accumulator, which
-   * `monitor_reading` drains.
+   * `monitor_reading` drains, and keeps the energies of the power it found.
    */
   void bind_monitor(const std::vector<double>& weights,
                     const std::vector<double>& column_weights);
   void unbind_monitor() noexcept;
   /**
    * The bound monitor's reading of the accepted state: `sum_t P`, the four weighted
-   * sums `sum_t w_k P`, and what the split collar took since the last reading.
+   * sums `sum_t w_k P`, what the split collar took since the last reading, and
+   * `sum_t P` and the two guards' and the collar's sums of the power the last step's
+   * split found (zeros before the first such step).
    */
   [[nodiscard]] std::vector<double> monitor_reading();
+  /**
+   * Bind the split collar's walk-off bucket of each frequency bin, `count` buckets
+   * (solprop #440): from here on `monitor_reading` also returns the state's energy
+   * per bucket, the fastest first.
+   */
+  void bind_occupancy(const std::vector<unsigned char>& buckets, std::size_t count);
   [[nodiscard]] std::vector<Complex> field_to_host() const;
   /** The field into `destination`, of the field's size: one copy from the space. */
   void field_to_host(std::span<Complex> destination) const;
@@ -782,6 +812,8 @@ public:
                                         bool rebuild_table);
   /** Hold the accepted state at a field-free plane, in the memory space (SEP 22). */
   void hold_plane();
+  /** Release the held plane's volume, for a run that holds none. */
+  void release_plane();
   /** The held plane's state on the host: the one copy a checkpoint takes. */
   [[nodiscard]] std::vector<Complex> held_to_host() const;
   /** The resident Adams history (solprop SEP 16 phase 3b, solprop ADR-043). */
@@ -871,8 +903,8 @@ public:
    */
   [[nodiscard]] std::vector<double>
   aperture_statistics(std::uint64_t flags, const std::vector<double>& apertures,
-                      int profile_code, int exponent,
-                      const std::vector<double>& regions, double intensity_factor);
+                      int exponent, const std::vector<double>& regions,
+                      double intensity_factor);
   [[nodiscard]] std::vector<double>
   statistics(std::uint64_t flags, const std::vector<double>& windows,
              const std::vector<double>& on_axis, double density, double taper,
@@ -889,6 +921,8 @@ public:
   void unbind_monitor() noexcept;
   /** As `State::monitor_reading`, over every column of the state. */
   [[nodiscard]] std::vector<double> monitor_reading();
+  /** As `State::bind_occupancy`, the buckets by mode, `(n_modes, n_omega)`. */
+  void bind_occupancy(const std::vector<unsigned char>& buckets, std::size_t count);
   [[nodiscard]] double quadrature_error() const;
   [[nodiscard]] double quadrature_peak();
   [[nodiscard]] std::string synthesis_provider() const;
@@ -949,4 +983,7 @@ void multiply_phase(const ExecutionSpace& execution_space, ConstComplexView valu
 
 template <> struct Kokkos::reduction_identity<solprop_native::MonitorSums> {
   KOKKOS_FUNCTION static solprop_native::MonitorSums sum() { return {}; }
+};
+template <> struct Kokkos::reduction_identity<solprop_native::SplitSums> {
+  KOKKOS_FUNCTION static solprop_native::SplitSums sum() { return {}; }
 };

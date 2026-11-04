@@ -81,6 +81,9 @@ medium, responses, beam and settings.
 _EXAMPLES: Final = "examples"
 """The package directory that holds the example recipes."""
 
+_SCAN_EXECUTION: Final = ("fields", "field_planes")
+"""The ``[execution]`` keys ``run_scan`` takes, rather than each point's settings."""
+
 
 @dataclass(frozen=True)
 class RecipeIssue:
@@ -793,8 +796,9 @@ class Recipe:
     def modes(self, z: float | None = None) -> "ModeSetPreview":  # noqa: UP037 - TYPE_CHECKING
         """Return the mode set a guided route would build, before the run (S18).
 
-        Labels, ``beta``, ``beta2``, loss and effective area over the grid's band,
-        and the zero-dispersion wavelength; pins are solved first. The cost is the
+        Labels, the effective index, ``beta`` to ``beta3``, loss, effective area and
+        nonlinear coefficient over the grid's band, and the zero-dispersion
+        wavelength; pins are solved first. The cost is the
         mode solve (:func:`solprop.recipe.preview.modes`).
 
         Parameters
@@ -975,10 +979,29 @@ class Recipe:
         solprop.output.schema.Output
             The run's output.
         """
+        return self.build().run(output, **{**self.run_keywords(), **run_keywords})  # type: ignore[arg-type]
+
+    def run_keywords(self) -> dict[str, object]:
+        """Return the keywords of ``Simulation.run`` the ``[execution]`` table sets.
+
+        :meth:`run` is ``build().run(output, **run_keywords(), ...)``; a caller that
+        builds the simulation itself, to keep it while it runs, passes these.
+
+        Returns
+        -------
+        dict
+            ``memory_budget``, where the table gives it.
+
+        Examples
+        --------
+        >>> from solprop.recipe import Recipe
+        >>> Recipe.example("soliton").run_keywords()
+        {}
+        """
         execution = self._execution()
-        if "memory_budget" in execution and "memory_budget" not in run_keywords:
-            run_keywords["memory_budget"] = execution["memory_budget"]
-        return self.build().run(output, **run_keywords)  # type: ignore[arg-type]
+        if "memory_budget" in execution:
+            return {"memory_budget": execution["memory_budget"]}
+        return {}
 
     # ------------------------------------------------------------------ scanning
 
@@ -1032,13 +1055,20 @@ class Recipe:
         for path, values in table.items():
             scan.add(path, cast("ArrayLike", self._axis(path, values)))
         document = self.to_dict()
-        execution = document.pop("execution", {})
         document.pop("scan", None)
+        # What `run_scan` takes is its own, and a builder that sets it is refused; the
+        # rest of the table is the points', which the builder's document keeps.
+        execution = dict(document.pop("execution", {}))
         keywords: dict[str, object] = {
             key: tuple(value) if isinstance(value, list) else value
             for key, value in execution.items()
-            if key in ("fields", "field_planes")
+            if key in _SCAN_EXECUTION
         }
+        kept = {
+            key: value for key, value in execution.items() if key not in _SCAN_EXECUTION
+        }
+        if kept:
+            document["execution"] = kept
         builder = RecipeBuilder(
             dump_text(document),
             None if self._base is None else str(self._base),

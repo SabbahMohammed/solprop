@@ -47,7 +47,7 @@ level, so a keyword added to solprop later can never collide with the format:
 |---|---|
 | `[recipe]` | `format` and `route`, required; `title` and `solprop`, informative |
 | `[build]` | the keywords of the route's `Simulation.from_*` constructor, under their own names |
-| `[execution]` | `fields`, `field_planes`, `resume_history` and `memory_budget`: settings the run reads when it executes |
+| `[execution]` | `fields`, `field_planes`, `resume_history`, `held_plane` and `memory_budget`: settings the run reads when it executes |
 | `[pins]` | values solved from a design target (a later release) |
 | `[scan]` | a scan over parameter paths (a later release) |
 
@@ -180,8 +180,8 @@ A recipe holds the `from_*` form, so the temporal absorber and its scheme are ke
 of the `settings` table, `absorber = { type = "absorber" }` built on the `grid`, and not
 of `[build]`, although `prop_radial`, `prop_free` and `prop_planar` take them as
 keywords too. The settings table takes the stepping, the planes, the statistics, the
-absorber, the backend and the precision; `fields`, `field_planes` and `resume_history`
-stay in `[execution]`, and the fields a route's builder sets (the density, the
+absorber, the backend and the precision; `fields`, `field_planes`, `resume_history` and
+`held_plane` stay in `[execution]`, and the fields a route's builder sets (the density, the
 transverse quadrature) are not the recipe's. On the `planar` route a slab mode names its
 fill, `{ type = "SlabMode", half_gap = "63.5 um", gas = "Ar", pressure = "1 bar" }`,
 because the fill of its channels is the run's; on the `waveguide` route the same
@@ -271,10 +271,22 @@ call it and write its values in `[build]`.
 ## Previews
 
 Before a run, `recipe.modes()` returns the mode set a guided route builds (the
-`capillary` and `waveguide` routes, and the slab channels of the `planar` route), at the
-launch position or at `z`: each mode's label, its `beta`, `beta2` and loss over the
-grid's band, its effective area (a slab mode's effective width) and its
-zero-dispersion wavelength in the band. Its cost is the mode solve. `recipe.preview_input()`
+`capillary` and `waveguide` routes, the slab channels of the `planar` route and the
+`gnlse` route's one specified mode, without a fill), at the
+launch position or at `z`: each mode's label, its effective index (`neff_minus_one`),
+`beta`, `beta1`, `beta2`, `beta3` and loss over the grid's band, its effective area (a
+slab mode's effective width), its nonlinear coefficient `gamma` where its fill has Kerr
+data (with the fill's `n2` at the grid's reference wavelength), and its
+zero-dispersion wavelength in the band. It also gives each mode's phase matching to a
+soliton at the pump `wavelength` in the launch mode, the set's first: the
+`phase_mismatch` of a dispersive wave in that mode over the band, and the phase-matched
+wavelengths `rdw` between the band's short edge and 0.9 of the pump (intermodal for every
+mode but the first). With an unchirped sech or Gaussian pulse above the soliton
+threshold, in anomalous dispersion, and a nonlinear coefficient (the recipe's `gamma`, or
+the fill's Kerr data at the preview's position), the soliton's nonlinear wavenumber is
+its largest constituent's, and the set says so (`nonlinear`, with `pump`); otherwise it
+is the linear condition. Its cost is the mode
+solve. `recipe.preview_input()`
 returns the input pulse on the run's grid as the launch sets it, without noise, so a
 preview draws nothing: its power in time, its spectrum, its energy and its peak power,
 read through the processing functions that read a run's file. On a free-space route it
@@ -307,6 +319,9 @@ scan = recipe.scan()
 run_scan(scan.scan, scan.build, output="scan.h5", **scan.keywords)
 ```
 
+`run_scan` takes `fields` and `field_planes`. The table's other settings, `resume_history`
+and `held_plane`, go to each point's run.
+
 ## The recipe in the output
 
 A simulation built by `recipe.build()` carries its recipe, and its first run records it
@@ -314,7 +329,7 @@ in the output beside the run, as the recipe was written and as it resolved: the 
 that rebuilds the run, seed included ([the file's layout](../results/output.md#the-recipe-a-run-was-built-from)).
 A change the recipe would not describe drops it with a warning, and the run then records
 none: `with_input`, `with_mixture`, or a new value of a setting other than `fields`,
-`field_planes` and `resume_history`.
+`field_planes`, `resume_history` and `held_plane`.
 
 ## The parameter metadata
 
@@ -331,7 +346,14 @@ rtol = parameters("capillary")["rtol"]
 print(rtol.resolver({"precision": "single"}))  # the capillary's tolerance in binary32
 ```
 
-A test holds the table to the constructors' signatures, so it cannot drift from them.
+The same call takes a registered type's name for the keywords of its table, so a second
+pulse, a pressure gradient, a mode or a free-space grid is described as a route keyword is:
+`parameters("GaussianPulse")["fwhm"]` has the unit `s`, the display unit `fs` and the
+summary a front end's field shows. A type's table leaves out what the type receives from
+the route (the absorber's time grid) and the keywords a recipe may not give.
+
+A test holds the tables to the constructors' signatures and to the registry's units, so
+they cannot drift from them.
 
 ## What a route and a species admit
 

@@ -446,7 +446,7 @@ composition the next pulse sees only through the densities a caller gives. The r
 whatever the model says it is; an ADK rate at an effective barrier is a fitted
 description, and its uncertainty is the model's, not the table's. A neutral channel is
 defined on a field grid only: envelope plasma has no neutral form and refuses one by
-name. The `mlx` backend refuses it too; `numpy_ref`, `numba_cpu` and `native` run it.
+name. The `mlx` backend refuses it too; `numpy_ref` and `native` run it.
 The plasma column's boundary diagnostic (`plasma_boundary_level`) counts a neutral
 channel's $|fE|$ as if it carried a free current, so a pre-depleted neutral population
 can raise that diagnostic without any current at the window's edge.
@@ -501,7 +501,6 @@ simulation = Simulation.from_capillary(
     envelope=True,
     plasma=True,
     raman=False,
-    backend="numpy_ref",
 )
 ```
 

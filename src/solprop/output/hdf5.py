@@ -103,6 +103,7 @@ from solprop.output.schema import (
     StepHistory,
     StepStats,
     TerminalCheckpoint,
+    refuse_earlier_absorbed_power,
 )
 
 __all__ = [
@@ -187,6 +188,38 @@ def _overwrite(group: h5py.Group, name: str, data: np.ndarray) -> None:
             return
         del group[name]
     group.create_dataset(name, data=data)
+
+
+def _overwrite_text(file: h5py.File, name: str, text: str) -> None:
+    """Write a variable-length string dataset in place, creating it the first time.
+
+    The run's outcome is rewritten at every saved plane. Deleted and created anew,
+    every copy stayed in the file: 1.8 kB a plane, 8 % of the file, on a Multistep run
+    saved step by step. Written in place, HDF5 frees the string it replaces, and the
+    file holds one (measured with h5py 3.15 and 3.16, HDF5 1.14.6 and 2.0.0). A
+    dataset of another shape or type is replaced.
+
+    Parameters
+    ----------
+    file : h5py.File
+        The open file.
+    name : str
+        The dataset's path.
+    text : str
+        What it holds.
+    """
+    if name in file:
+        existing = file[name]
+        if (
+            isinstance(existing, h5py.Dataset)
+            and existing.shape == ()
+            and (string := h5py.check_string_dtype(existing.dtype)) is not None
+            and string.length is None
+        ):
+            existing[()] = text
+            return
+        del file[name]
+    file.create_dataset(name, data=text, dtype=h5py.string_dtype())
 
 
 def _write_march(group: h5py.Group, snapshot: MarchSnapshot) -> None:
@@ -1259,12 +1292,8 @@ class HDF5Output(PlaneStore):
         elif _CHECKPOINT_KEY in file:
             del file[_CHECKPOINT_KEY]
         if outcome is not None:
-            if _OUTCOME_KEY in file:
-                del file[_OUTCOME_KEY]
-            file.create_dataset(
-                _OUTCOME_KEY,
-                data=json.dumps(asdict(outcome), sort_keys=True),
-                dtype=h5py.string_dtype(),
+            _overwrite_text(
+                file, _OUTCOME_KEY, json.dumps(asdict(outcome), sort_keys=True)
             )
         file.flush()
 
@@ -1310,6 +1339,7 @@ class HDF5Output(PlaneStore):
         file = self._file
         if self._append_mode:
             stored = RunMetadata.from_json(_read_json(file))
+            _refuse_earlier_columns(file, self._path)
             if not self._gated:
                 comparison = stored.compare(metadata)
                 if not comparison.continues:
@@ -1920,6 +1950,8 @@ def _compare_cache(
         logger.debug("no cache at %s; starting from the beginning", path)
         return None
     stored, _ = _stored_metadata(path)
+    with h5py.File(path, "r") as file:
+        _refuse_earlier_columns(file, path)
     _check_plasma_benchmark(stored)
     _check_accessors(path, stored, metadata)
     return stored, stored.compare(metadata)
@@ -1969,6 +2001,31 @@ def _resume_refusal(
     return (
         text + "\nTo change the physics, launch a new segment from a saved plane; to "
         'continue in this file regardless, pass resume="force".'
+    )
+
+
+def _refuse_earlier_columns(file: h5py.File, path: Path | str) -> None:
+    """Refuse to continue a file whose ``absorbed_power`` has the earlier columns.
+
+    Parameters
+    ----------
+    file : h5py.File
+        The open file.
+    path : pathlib.Path or str
+        Its path, named in the refusal.
+
+    Raises
+    ------
+    OutputError
+        As :func:`solprop.output.schema.refuse_earlier_absorbed_power` documents.
+    """
+    refuse_earlier_absorbed_power(
+        path,
+        [
+            _dataset(file, name).shape
+            for name in ("stats/absorbed_power", "step_stats/absorbed_power")
+            if name in file
+        ],
     )
 
 
@@ -2237,6 +2294,7 @@ def resume(path: Path | str) -> ResumeState:
     metadata, _ = _stored_metadata(path)
     _check_plasma_benchmark(metadata)
     with h5py.File(path, "r") as file:
+        _refuse_earlier_columns(file, path)
         checkpoint = _read_checkpoint(file, metadata)
         outcome = _read_outcome(file)
         n_saved = _stored_counts(file)[0] if "z" in file else 0

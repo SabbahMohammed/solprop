@@ -5,10 +5,10 @@
 """The boundary monitor (SEP 21, decisions D5 and D7).
 
 A linear envelope pulse given a group-delay offset walks across the time window; the
-monitor sees it reach the guard, warns, and stops the run, while a pulse that stays
-clear leaves every occupancy at the floor. With the stop relaxed, the energy the
-collar removed, integrated by the monitor's trapezoid over committed steps, matches the
-energy the run actually lost.
+monitor sees it reach the guard, warns, and stops the run, under either temporal
+scheme and at any step, while a pulse that stays clear leaves every occupancy at the
+floor. With the stop relaxed, the energy the collar removed, integrated by the
+monitor's trapezoid over committed steps, matches the energy the run actually lost.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -24,14 +25,15 @@ import numpy as np
 import pytest
 
 from runtime_types import unchecked
+from solprop.backends.multistep import CallLedger
 from solprop.backends.registry import available
 from solprop.constants import C
-from solprop.driver import Simulation, prop_gnlse
+from solprop.driver import Simulation, SimulationSettings, prop_gnlse
 from solprop.driver.executors import Batch, Local
 from solprop.driver.run import _earlier_execution
 from solprop.driver.scan import Scan, ScanPoint, run_scan
-from solprop.exceptions import BoundaryError, BoundaryWarning
-from solprop.grid import EnvelopeGrid
+from solprop.exceptions import BackendError, BoundaryError, BoundaryWarning
+from solprop.grid import EnvelopeGrid, FieldGrid, RadialGrid
 from solprop.log import NullReporter
 from solprop.monitor import (
     CADENCE,
@@ -41,7 +43,8 @@ from solprop.monitor import (
     BoundaryEnergies,
     BoundaryMonitor,
 )
-from solprop.output import MemoryOutput
+from solprop.nonlinear.responses import KerrResponse
+from solprop.output import MemoryOutput, open_file, schema
 from solprop.output.hdf5 import resume
 from solprop.output.scan import read_point
 from solprop.output.schema import (
@@ -51,10 +54,13 @@ from solprop.output.schema import (
     RunOutcome,
     TerminalCheckpoint,
 )
-from solprop.pulses import GaussianPulse
+from solprop.physdata import gamma3
+from solprop.pulses import GaussianPulse, SpatialPulse
+from solprop.spatial import SpatialMedium
 from solprop.stepper.multistep import Multistep
 from solprop.stepper.runge_kutta import RungeKutta
 from solprop.stepper.schedule import FixedSchedule
+from solprop.translate.masks import AbsorberScheme
 
 LENGTH = 1.0
 TRANGE = 1e-12
@@ -148,17 +154,62 @@ def test_a_pulse_that_stays_clear_leaves_the_guards_empty() -> None:
     assert record["steps"] > 0
 
 
-@pytest.mark.parametrize("backend", ["numpy_ref", "numba_cpu", "native"])
-def test_a_walking_pulse_is_stopped_at_the_guard(backend: str) -> None:
+@pytest.mark.parametrize("scheme", ["nonlinear", "split_step"])
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
+def test_a_walking_pulse_is_stopped_at_the_guard(backend: str, scheme: str) -> None:
     # One window's walk-off: the pulse reaches the guard well inside the fibre, on
-    # every backend's march.
+    # every backend's march, under either scheme.
     if backend not in available():
         pytest.skip(f"{backend} is not installed")
     with (
         pytest.warns(BoundaryWarning, match="guard occupancy"),
         pytest.raises(BoundaryError, match="guards"),
     ):
-        walker(1.2 * TRANGE, backend=backend).run(progress="none")
+        walker(1.2 * TRANGE, backend=backend, absorber_scheme=scheme).run(
+            progress="none"
+        )
+
+
+def _stopped_at(simulation: Simulation) -> float:
+    """Return where the monitor stopped a run, m."""
+    with (
+        warnings.catch_warnings(),
+        pytest.raises(BoundaryError, match="guards") as stopped,
+    ):
+        warnings.simplefilter("ignore", BoundaryWarning)
+        simulation.run(progress="none")
+    return float(str(stopped.value).split(" m ")[0].removeprefix("at z = "))
+
+
+STOP_AGREEMENT = 0.1
+"""How far the split's stop may fall from the in-stage scheme's, relative: the check
+sees committed states only, so its stop is late by up to one step, and the two schemes'
+fields in the collar differ by the split's first-order splitting."""
+
+
+@pytest.mark.parametrize("dz_max", [None, 1 / 50, 1 / 1000], ids=str)
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
+def test_the_split_stops_a_walking_pulse_where_the_in_stage_scheme_does(
+    backend: str, dz_max: float | None
+) -> None:
+    # The state the split leaves has its guards damped by exp(-alpha h), about
+    # exp(-10) at the adaptive steps, which hid the pulse until it was gone; the state
+    # it found holds what walked in during the step unabsorbed, which stopped it 40 %
+    # early. Halfway through the factor the guards read as the in-stage scheme's.
+    if backend not in available():
+        pytest.skip(f"{backend} is not installed")
+    reference = _stopped_at(
+        walker(1.2 * TRANGE, backend=backend, integrator=RungeKutta())
+    )
+    split = walker(
+        1.2 * TRANGE,
+        backend=backend,
+        integrator=RungeKutta(),
+        absorber_scheme="split_step",
+    )
+    if dz_max is not None:
+        split.settings = dataclasses.replace(split.settings, dz_max=dz_max)
+    assert _stopped_at(split) == pytest.approx(reference, rel=STOP_AGREEMENT)
 
 
 def _split(
@@ -174,6 +225,42 @@ def _split(
     return simulation
 
 
+def _radial_walker(backend: str, scheme: AbsorberScheme, dz_max: float) -> Simulation:
+    """Return a 1 pJ radial pulse at 1150 nm whose group delay walks out of 400 fs."""
+    grid = FieldGrid.from_limits(1.0, 800e-9, (500e-9, 1.3e-6), 400e-15)
+    return Simulation.from_radial(
+        grid,
+        RadialGrid(1.2e-2, 16),
+        SpatialMedium("Ar", 60.0),
+        [KerrResponse(gamma3("Ar", wavelength=800e-9), thg=False)],
+        SpatialPulse(
+            GaussianPulse(wavelength=1150e-9, fwhm=40e-15, energy=1e-12), 2e-3
+        ),
+        settings=SimulationSettings(
+            save_planes=[0.5, 1.0],
+            backend=backend,
+            absorber_scheme=scheme,
+            dz_max=dz_max,
+            dz_init=1e-3,
+        ),
+        noise=None,
+    )
+
+
+@pytest.mark.parametrize("dz_max", [0.1, 0.005], ids=str)
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
+def test_the_split_stops_a_walking_radial_pulse_where_the_in_stage_scheme_does(
+    backend: str, dz_max: float
+) -> None:
+    # The radial route's default scheme, the split, ran this pulse to the end of its
+    # metre with 0.99998 of it removed, where the in-stage scheme stops it at 0.33 m.
+    if backend not in available():
+        pytest.skip(f"{backend} is not installed")
+    reference = _stopped_at(_radial_walker(backend, "nonlinear", dz_max))
+    split = _stopped_at(_radial_walker(backend, "split_step", dz_max))
+    assert split == pytest.approx(reference, rel=STOP_AGREEMENT)
+
+
 def _lost(run: Output) -> float:
     """Return the fraction of its launch energy a single-mode run lost."""
     energy = np.asarray(run["stats/energy"])[:, 0, 0]
@@ -181,7 +268,7 @@ def _lost(run: Output) -> float:
 
 
 @pytest.mark.parametrize("integrator", [RungeKutta(), Multistep()], ids=repr)
-@pytest.mark.parametrize("backend", ["numpy_ref", "numba_cpu", "native"])
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
 def test_the_split_scheme_s_removal_is_read_exactly(
     backend: str, integrator: RungeKutta | Multistep
 ) -> None:
@@ -232,7 +319,7 @@ def test_a_single_precision_split_reads_the_physical_removal() -> None:
     assert record_of(run)["removed_fraction"] == pytest.approx(lost, rel=1e-4)
 
 
-@pytest.mark.parametrize("backend", ["numpy_ref", "numba_cpu", "native"])
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
 def test_a_deep_collar_reads_no_removal_from_residue(backend: str) -> None:
     # A capillary whose ten steps take the collar's deepest samples to alpha h of
     # about 25, its pulse far from the edges. The band mask after each split leaves
@@ -331,21 +418,85 @@ def test_a_stopped_run_s_record_carries_the_plane_rows() -> None:
     assert record["planes"]["z"][0] == 0.0
 
 
-def test_the_file_grows_linearly_with_its_planes(tmp_path: Path) -> None:
-    # Eight times the planes: the bytes per plane do not grow with them.
+_FIBRE: dict[str, Any] = {
+    "wavelength": 835e-9,
+    "wavelength_limits": (500e-9, 2e-6),
+    "trange": 1e-12,
+    "width": 100e-15,
+    "peak_power": 9.8,
+    "shape": "sech",
+    "seed": 1,
+    "progress": "none",
+    "backend": "numpy_ref",
+}
+"""The soliton fibre of the file-size tests, but for its planes and its stepper."""
+
+
+def _saved_planes(path: Path, **settings: Any) -> int:
+    """Run the fibre into `path` and return how many planes the file holds."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", BoundaryWarning)
+        prop_gnlse(
+            0.11, 0.05, [0.0, 0.0, -1.183e-26], output=path, **_FIBRE, **settings
+        )
+    with open_file(path) as stored:
+        return stored.n_saved
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        pytest.param([{"n_save": 50}, {"n_save": 400}], id="runge-kutta"),
+        # Every step a plane (707 and 1609 of them), on the capillary's default stepper,
+        # whose call ledger records an order per step. Before the ledger's orders were
+        # run-length encoded and the record written in place, the bytes per plane grew
+        # by 10 % between the two, 23.8 kB to 26.1 kB, and by 33 % at 3479 planes.
+        pytest.param(
+            [
+                {"n_save": 2, "step_planes": 1, "integrator": Multistep(), "rtol": rtol}
+                for rtol in (1e-5, 1e-7)
+            ],
+            id="multistep-step-planes",
+            marks=pytest.mark.medium,
+        ),
+    ],
+)
+def test_the_file_grows_linearly_with_its_planes(
+    tmp_path: Path, runs: list[dict[str, Any]]
+) -> None:
+    # Over twice the planes: the bytes per plane do not grow with them.
     per_plane = []
-    for n_save in (50, 400):
-        path = tmp_path / f"run_{n_save}.h5"
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", BoundaryWarning)
-            prop_gnlse(
-                0.11, 0.05, [0.0, 0.0, -1.183e-26], wavelength=835e-9,
-                wavelength_limits=(500e-9, 2e-6), trange=1e-12, width=100e-15,
-                peak_power=9.8, shape="sech", n_save=n_save, seed=1,
-                progress="none", output=path, backend="numpy_ref",
-            )  # fmt: skip
-        per_plane.append(path.stat().st_size / n_save)
+    for index, settings in enumerate(runs):
+        path = tmp_path / f"run_{index}.h5"
+        planes = _saved_planes(path, **settings)
+        per_plane.append(path.stat().st_size / planes)
     assert per_plane[1] < 1.05 * per_plane[0]
+
+
+def test_a_saved_plane_validates_its_record_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The driver builds the record once a plane, and the store amends it with what it
+    # has already validated -- its earlier executions -- rather than checking the whole
+    # record again: one JSON round trip a plane, not nine.
+    validate = schema._outcome_record
+    validated: list[Mapping[str, object]] = []
+
+    def counted(record: Mapping[str, object]) -> dict[str, object]:
+        validated.append(record)
+        return validate(record)
+
+    monkeypatch.setattr(schema, "_outcome_record", counted)
+    output = _Recording()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", BoundaryWarning)
+        prop_gnlse(
+            0.11, 0.05, [0.0, 0.0, -1.183e-26], output=output, n_save=6,
+            integrator=Multistep(), **_FIBRE,
+        )  # fmt: skip
+    assert output.outcome is not None and output.outcome.status == "complete"
+    assert len(output.records) > 6
+    assert len(validated) == len(output.records)
 
 
 class _CrashError(RuntimeError):
@@ -649,7 +800,7 @@ def test_the_removed_fraction_is_the_energy_the_run_lost() -> None:
     assert removed == pytest.approx(lost, rel=0.05)
 
 
-@pytest.mark.parametrize("backend", ["numba_cpu", "native"])
+@pytest.mark.parametrize("backend", ["native"])
 def test_the_backends_keep_the_same_record(backend: str) -> None:
     if backend not in available():
         pytest.skip(f"{backend} is not installed")
@@ -703,15 +854,20 @@ def _split_monitor(
     draw = 1e-3 * np.exp(2j * np.pi * rng.random(grid.n_t))[None, None, None, :]
     reading = monitor.energies(spectrum)
     monitor.launch(reading, 0.0, floor=draw if floor else None)
-    return monitor, spectrum, reading
+    # A step's reading carries what its split found: a centred pulse, clear of the
+    # collar, as the state holds it.
+    found = np.concatenate([[reading.total], reading.regions[:3]])
+    return monitor, spectrum, dataclasses.replace(reading, found=found)
 
 
 def test_the_split_s_removal_is_what_the_backend_took() -> None:
     # The backend adds up every accepted step's split, checked or not; the monitor
     # reads the sum at the next check and integrates no rate.
     monitor, spectrum, reading = _split_monitor()
-    taken = monitor.split_removal(spectrum, 0.01)
+    taken, found, *_ = monitor.split_sums(spectrum, 0.01)
     assert taken == pytest.approx(reading.total * -math.expm1(-10.0 * 0.01))
+    # What it found, halfway through its factor.
+    assert found == pytest.approx(reading.total * math.exp(-5.0 * 0.01))
     monitor.skip(0.01)
     monitor.step(dataclasses.replace(reading, removed=2 * taken), 0.02)
     # Two checks at one position, as a step landing on a saved plane gives: the
@@ -722,11 +878,70 @@ def test_the_split_s_removal_is_what_the_backend_took() -> None:
     assert summary["removed_fraction"] == summary["raw_removed_fraction"]
 
 
+def test_under_the_split_the_guards_are_judged_on_what_it_found() -> None:
+    # The state the split left shows empty guards; what it found holds a tenth of
+    # the energy in the high guard, which stops the run under the default check.
+    monitor, _, reading = _split_monitor()
+    monitor.check = BoundaryCheck()
+    left = BoundaryEnergies(
+        reading.total,
+        np.zeros(4),
+        found=reading.total * np.array([1.0, 0.0, 0.1, 0.2]),
+    )
+    with pytest.raises(BoundaryError, match="guards"):
+        monitor.step(left, 0.1)
+
+
+def test_a_state_the_split_emptied_is_still_judged_on_what_it_found() -> None:
+    # One energy for one verdict: the split took nearly everything, below the
+    # no-light floor of the state it left, but what it found filled the guard.
+    monitor, _, reading = _split_monitor()
+    monitor.check = BoundaryCheck()
+    emptied = BoundaryEnergies(
+        1e-15 * reading.total,
+        np.zeros(4),
+        found=reading.total * np.array([1.0, 0.0, 0.1, 0.2]),
+    )
+    with pytest.raises(BoundaryError, match="guards"):
+        monitor.step(emptied, 0.1)
+
+
+def test_the_collar_share_is_of_what_the_split_found() -> None:
+    monitor, _, reading = _split_monitor()
+    found = reading.total * np.array([1.0, 0.0, 0.0, 0.25])
+    monitor.step(BoundaryEnergies(reading.total, np.zeros(4), found=found), 0.1)
+    assert monitor.summary()["collar_max"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("found", [None, np.zeros(4)], ids=["missing", "empty"])
+def test_a_split_step_s_reading_without_what_it_found_is_refused(
+    found: np.ndarray | None,
+) -> None:
+    # The state holds light, so its split found some: a reading without it would
+    # fall back on the state the split left, the guards it hid.
+    monitor, _, reading = _split_monitor()
+    with pytest.raises(BackendError, match="must carry what the step's split found"):
+        monitor.step(dataclasses.replace(reading, found=found), 0.1)
+
+
+def test_the_in_stage_scheme_ignores_what_a_split_would_have_found() -> None:
+    grid = EnvelopeGrid.from_limits(LENGTH, 1e-6, (0.8e-6, 1.25e-6), TRANGE)
+    monitor = BoundaryMonitor.build(
+        grid, np.full(grid.n_t, 10.0), BoundaryCheck(budget=1.0, stop_factor=1.0)
+    )
+    pulse = np.exp(-((grid.t / 50e-15) ** 2)).astype(complex)
+    reading = monitor.energies(np.fft.fft(pulse)[None, None, None, :])
+    monitor.launch(reading, 0.0)
+    found = reading.total * np.array([1.0, 0.0, 0.1, 0.2])
+    monitor.step(dataclasses.replace(reading, found=found), 0.1)
+    assert cast("float", monitor.summary()["guard_high_max"]) < 1e-12
+
+
 def test_the_split_s_removal_counts_when_nothing_is_left() -> None:
     # The step that absorbs the last of the light is not judged, but what it took
     # is the run's removal all the same.
     monitor, _, reading = _split_monitor()
-    gone = BoundaryEnergies(0.0, np.zeros(4), removed=reading.total)
+    gone = BoundaryEnergies(0.0, np.zeros(4), removed=reading.total, found=np.zeros(4))
     monitor.step(gone, 0.1)
     assert monitor.summary()["removed_fraction"] == pytest.approx(1.0)
 
@@ -850,7 +1065,7 @@ def test_the_collar_stays_in_unless_the_run_opts_in() -> None:
     assert record_of(watched)["collar_left_out_checks"] == 0
 
 
-@pytest.mark.parametrize("backend", ["numpy_ref", "numba_cpu", "native"])
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
 def test_a_quiet_collar_is_left_out_without_changing_the_run(backend: str) -> None:
     # A pulse clear of the edges, opted in: the monitor finds the collar quiet, the
     # stages leave its term out, and the field is the always-on collar's.
@@ -876,7 +1091,7 @@ def test_a_quiet_collar_is_left_out_without_changing_the_run(backend: str) -> No
 
 
 @pytest.mark.parametrize("integrator", sorted(INTEGRATORS))
-@pytest.mark.parametrize("backend", ["numpy_ref", "numba_cpu", "native"])
+@pytest.mark.parametrize("backend", ["numpy_ref", "native"])
 def test_light_reaching_a_quiet_collar_switches_it_back_on(
     backend: str, integrator: str
 ) -> None:
@@ -1064,7 +1279,9 @@ def test_a_resting_collar_frees_the_adams_order() -> None:
     held = capillary(BoundaryCheck())
     freed = capillary(BoundaryCheck(quiet_collar=True))
     orders = {
-        name: cast("dict[str, Any]", run.outcome.execution)["response_calls"]["orders"]
+        name: CallLedger.from_record(
+            cast("dict[str, Any]", run.outcome.execution)["response_calls"]
+        ).orders
         for name, run in (("held", held), ("freed", freed))
         if isinstance(run, PlaneStore) and run.outcome is not None
     }

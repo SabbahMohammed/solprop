@@ -235,7 +235,7 @@ propagates the real electric field, with third-harmonic generation on. `envelope
 selects the envelope grid and keeps both `thg` and `plasma` off by default. Explicit
 `plasma=True` or an instantaneous rate object on an envelope grid selects
 [cycle-averaged envelope plasma](../media/ionisation.md#envelope-plasma-sources), which cannot be
-combined with `thg=True`. It runs on `numpy_ref`, `numba_cpu` and the native backend; a
+combined with `thg=True`. It runs on `numpy_ref` and the native backend; a
 backend that cannot run a problem refuses it by name rather than falling back
 ([the backend notes](../../dev/backends.md) give the qualification of each).
 
@@ -288,7 +288,7 @@ straight bore or a taper alike. The block is the run's loss model, so `loss=` mu
 `True`; it needs the contiguous set `modes=N` builds (or one azimuthal order, for the
 `te_tm` block) and a scalar state, and it is refused beside `lattice=` and
 `model="reduced"`, each by name. It carries the default input noise; the modified noise
-model is refused beside it. It runs on `numpy_ref`, `numba_cpu` and the native
+model is refused beside it. It runs on `numpy_ref` and the native
 backend, CPU and GPU builds alike, with the default integration method;
 `CoherentWall(method="cf4")`, which integrates each section by commutator-free
 exponentials of its whole generator, runs on `numpy_ref` alone. See [the coherent wall](../waveguides/coherent-wall.md#the-coherent-wall),
@@ -494,10 +494,66 @@ backend that closed itself closes the runner. The runner admits the backend's me
 once, before constructing it, and admits each run's in-memory output beside it when the
 run starts.
 
+The march holds no input. An array the record keeps by its digest (below) is read in
+place rather than copied, and the runner drops every reference to it, and to the launch
+a modal route converts it to, as soon as the backend has loaded it. So an input formed in
+the call, as above, is freed before the first step. Two arrays are kept all the same: a
+smaller array, which the record carries inline, is copied into it, and the simulation the
+runner was built from keeps its own input for as long as it lives. For a scan over large
+arrays, build that simulation from a broadcast, which holds one repeated block:
+
+
+```{code-block} python
+placeholder = np.broadcast_to(np.zeros((1, 1, 1), dtype=np.complex128), shape)
+simulation = Simulation(grid, (), responses, placeholder, settings=settings, ...)
+```
+
+Spell the call's keywords out too: when any argument is unpacked, Python keeps a call's
+positional arguments for as long as the call runs, so
+`runner.run(build_input(delay), **options)` holds the input through the march, one volume.
+
 `with_input` itself validates only what changed: the replaced input's shape, dtype and
 one finiteness pass, and the replaced noise's, with every other leaf of the translated
 problem shared rather than scanned again; a new `initial_z` keeps the stepper's checks.
 Its `configuration=` merges caller keys into the derived run's record (a key the run
-records itself is refused), and an array input of more than 2²⁰ elements is recorded by
+records itself is refused). An array input, here and in the constructor, is copied when
+the simulation is built, so changing it afterwards changes neither the run nor its
+record; an array input of more than 2²⁰ elements is recorded by
 the SHA-256 of its bytes rather than inline, so a gigabyte launch costs seconds of
 hashing per input rather than gigabytes of JSON.
+
+A caller that already knows what its input is need not pay even that. Both `with_input`
+and `SimulationRunner.run` take `input_identity=`, a string the record then holds with the
+array's dtype and shape ({py:class}`~solprop.output.schema.StatedInput`) in place of the
+array's own record, without reading its bytes, so the run's hash follows the string:
+
+```{code-block} python
+output = runner.run(
+    build_input(delay),
+    input_identity=f"pump {pump_label}, delay {delay:.6e} s",
+    progress="none",
+)
+```
+
+```{warning}
+An identity is taken on trust. Two different arrays stated alike have one configuration
+hash, so **a wrong identity passes a resume and a scan's cache**: the resumed run or the
+cached point is then the wrong one, and nothing can tell. Say everything that makes the
+input what it is, and leave `input_identity` out unless the digest is a measured cost.
+```
+
+Only an array can be stated; a pulse is a small record of itself and is refused. A file
+written with a statement is continued only under the same statement, not by the same array
+without one, since the two records differ. The finiteness pass stays: it costs a few
+percent of a digest, about 0.6 s and 9 s for a 4 GiB input on a Xeon without SHA
+instructions, and it refuses a bad input before it is loaded.
+
+**The boundary check on a free-space scan.** The default
+[`boundary_check`](../numerics/boundaries.md) reads a free-space run's transverse edge on the
+host at the launch, at every plane and at every read: it copies the state across and
+transforms it out of place, even with `fields="none"`. That is about 1.1 field volumes more at
+the peak, which neither `memory_ledger` nor the admission counts, and on native CPU at 256 ×
+256 × 96 with two planes it took a point from 0.96 to 2.1 volumes above the level before the
+input, and from 3.05 to 3.99 s. A scan whose window is already settled can pass
+`boundary_check=None`. That also turns off the check of the time window's edges, since no
+setting keeps one without the other, so settle the window on one input with the check on first.

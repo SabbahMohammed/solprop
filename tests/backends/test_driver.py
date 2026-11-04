@@ -821,6 +821,22 @@ def test_the_history_records_the_executed_norm_and_the_controller_the_equivalent
     assert np.all(history.error_norm[accepted] <= 1.0)
 
 
+def test_the_controller_keeps_only_the_norms_it_reads(driver):
+    """The controller reads two norms, a lag back; a march keeps those, not every step.
+
+    The first entry is still the start-up rule's cue: the history is emptied when a
+    field is loaded, and its length is one only after the first accepted step.
+    """
+    made = driver()
+    lag = made._problem.stepper.controller.lag
+    assert made._accepted_norms.maxlen == lag + 2
+    summary = made.propagate_to(LENGTH)
+    assert summary.n_steps > lag + 2
+    assert len(made._accepted_norms) == lag + 2
+    made.set_initial(made._problem.initial.field0, None)
+    assert len(made._accepted_norms) == 0
+
+
 # --- the seam a compiled backend subclasses ----------------------------------------
 
 FIELD = "jaxtyping.Complex[ndarray, 'n_batch n_modes n_pol n_omega']"
@@ -921,6 +937,8 @@ DRIVER_SURFACE = {
     "observe": "(self, *, field: bool = True) -> solprop.backends.protocol.Observation",
     "held_observation": "(self) -> solprop.backends.protocol.Observation | None",
     "_hold": "(self, state: _StateT | None) -> None",
+    "_drop_held": "(self) -> None",
+    "set_held_plane": "(self, held: bool) -> None",
     "_held_field": f"(self) -> {FIELD}",
     "set_initial": (
         "(self, field: jaxtyping.Complex[ndarray, 'n_batch n_modes n_pol n_omega'], "
@@ -976,8 +994,10 @@ SEPARABLE_OPERATOR_FIELDS = (
     "z_span",
     "kappa_sq",
     "kperp_rate",
+    "user_rate",
 )
-"""The separable leaf's fields; schema 15 appended ``kappa_sq``, 31 ``kperp_rate``."""
+"""The separable leaf's fields; schema 15 appended ``kappa_sq``, 31 ``kperp_rate``, 45
+``user_rate``."""
 
 STAGE_TERMS_FIELDS = ("phi", "prefactor", "separable")
 STAGE_SCALARS_FIELDS = (
@@ -1112,10 +1132,21 @@ def test_the_surface_a_backend_subclasses_is_frozen(driver):
     keyword: a stored field never takes the ``input`` draw again. Version 41 adds the
     problem's ``transverse`` design and the class attribute ``reads_transverse_edge``,
     whether a backend reads a free-space run's transverse edge (SEP 40), without
-    changing these signatures. Version 42 admits a neutral plasma channel
-    (``PlasmaChannel.electrons_per_event`` of zero), without changing them either.
+    changing these signatures. Version 42 lets the initial state be strided, which
+    ``set_initial`` accepts, without changing its signature.
+    Version 43 widens what ``_boundary_energies`` returns under the split scheme,
+    without changing its signature: the energies of what each step's split found
+    (``_split_found``) and the state's occupancy of the split collar's walk-off buckets
+    (``KernelProblem.split_crossing``); the native reading's ``bind_occupancy`` and its
+    ``10 + 128`` numbers, and the native march's required ``step_cap`` bound. It adds
+    ``_split_capped``, the cap on adaptive steps. Version 44 adds ``set_held_plane``,
+    with which a driver turns the low-storage march's held plane off for a run, and
+    ``_drop_held``, which releases its buffer. Version 45 appends ``user_rate`` to the
+    separable leaf, without changing these signatures. Version 46 admits a neutral
+    plasma channel (``PlasmaChannel.electrons_per_event`` of zero), without changing
+    them either.
     """
-    assert KERNEL_SCHEMA_VERSION == 42, (
+    assert KERNEL_SCHEMA_VERSION == 46, (
         "the seam changed: rewrite the literals of this test"
     )
     assert StepDriver.reads_transverse_edge is False

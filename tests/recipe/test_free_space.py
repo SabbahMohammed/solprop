@@ -477,7 +477,9 @@ def test_each_free_space_type_builds_from_a_table(table, expected):
 
 def test_the_registered_settings_and_controller_leave_out_what_is_not_a_recipe_s():
     settings = REGISTRY["SimulationSettings"]
-    assert {"fields", "field_planes", "resume_history"} <= set(settings.omitted)
+    assert {"fields", "field_planes", "resume_history", "held_plane"} <= set(
+        settings.omitted
+    )
     assert all(name.startswith("_") or name in settings.omitted for name in ("_route",))
     assert "weights" in REGISTRY["PIController"].omitted
     assert "susceptibility" in REGISTRY["SpatialMedium"].omitted
@@ -488,6 +490,7 @@ def test_the_registered_settings_and_controller_leave_out_what_is_not_a_recipe_s
 # ------------------------------------------------------------------- export
 
 
+@pytest.mark.child_runs_auto
 @pytest.mark.medium
 @pytest.mark.parametrize("name", ["radial", "field", "line", "aimed", "planar"])
 def test_the_python_export_builds_the_same_run(name, tmp_path, monkeypatch):

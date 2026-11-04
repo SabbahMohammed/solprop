@@ -487,7 +487,7 @@ class NumpyRefBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
                 raise BackendError(
                     f"TDSE does not define legacy statistics {sorted(unavailable)}"
                 )
-        # Before the spatial branch, as in `numba_cpu`: a spatial run asked for a
+        # Before the spatial branch: a spatial run asked for a
         # general name would otherwise reach `collect_spatial` and be answered from a
         # geometry that carries no certified metric at all.
         _refuse_inadmissible(self._problem, spec)
@@ -1780,10 +1780,10 @@ class NumpyRefBackend(StepDriver[Complex[np.ndarray, "n_batch n_modes n_pol n_om
             # The time factor acts alike on every column of any transverse basis, so
             # the stored state's power is what the split takes of, wherever it acts;
             # read as the physical state, which a single-precision state is scaled
-            # from.
-            self._split_removed += monitor.split_removal(
-                self._observed_field(masked), dz
-            )
+            # from. What it finds is what the occupancies are judged on.
+            sums = monitor.split_sums(self._observed_field(masked), dz)
+            self._split_removed += float(sums[0])
+            self._split_found = sums[1:]
         geometry = self._problem.transform.geometry
         if geometry is not None and geometry.kind == "slab":
             # A (p, y) row is a modal amplitude whose time signal is a real field's,
@@ -3243,8 +3243,7 @@ def _triangular_exponential(
     blocks : numpy.ndarray
         The stack to exponentiate, shape ``(n_active, n_modes, n_modes)``.
     backend : str, optional
-        The executing backend's registry name, used in the refusal: ``numba_cpu``
-        forms its actions with this function on the host.
+        The executing backend's registry name, used in the refusal.
 
     Returns
     -------
@@ -3641,8 +3640,7 @@ def _check_flow_conditioning(
     dz : float
         Length of the step, m, used in the refusal.
     backend : str, optional
-        The executing backend's registry name, used in the refusal: ``numba_cpu``
-        checks its steps with this function.
+        The executing backend's registry name, used in the refusal.
 
     Raises
     ------
@@ -3669,8 +3667,8 @@ def _refuse_flow_conditioning(
     """Refuse a step whose measured ``norm(U) norm(U^-1)`` exceeds the certificate.
 
     The decision of :func:`_check_flow_conditioning`, on a measurement made
-    elsewhere: the compiled backends measure the two spectral norms in their own
-    kernels and hand the per-bin products here, so every backend
+    elsewhere: a compiled backend measures the two spectral norms in its own
+    kernels and hands the per-bin products here, so every backend
     compares them with the declared row by the same allowance and refuses in the same
     words.
 
@@ -3692,8 +3690,6 @@ def _refuse_flow_conditioning(
     BackendError
         If the measured conditioning exceeds the declared bound at any bin.
     """
-    if not measured.size:
-        return
     declared = flow.condition_bound[section]
     # A bin whose block is normal has a bound of exactly one and a measured product
     # that is one to within the rounding of two spectral norms; the allowance is that

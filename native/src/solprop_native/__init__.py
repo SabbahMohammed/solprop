@@ -13,6 +13,7 @@ observations are owning host ``complex128`` arrays.
 from __future__ import annotations
 
 import functools
+import importlib.util
 import logging
 import os
 import platform
@@ -26,18 +27,18 @@ import numpy as np
 
 from ._bind import proc_bind
 from ._budget import native_threads, physical_cores, thread_budget
-from ._cpu import check_cpu_baseline
+from ._cpu import check_cpu_baseline, select_variant
 from ._wait import wait_policy
 
 if platform.system() == "Darwin" and "pyfftw" in sys.modules:
-    # solprop loads this package before pyFFTW itself; this is reached when a script,
-    # or a package it imported, loaded pyFFTW first.
+    # solprop does not load pyFFTW; this is reached when a script, or a package it
+    # imported, did. Its macOS wheels carry a private OpenMP runtime of their own.
     raise RuntimeError(
         "on macOS, import solprop_native before pyfftw; the reverse order is "
         "unsafe with wheels that bundle another OpenMP runtime. pyfftw is already "
-        "loaded in this process: restart Python and import solprop (or solprop_native) "
-        "before pyfftw or any package that imports it, or pass another backend, such "
-        "as backend='numba_cpu'"
+        "loaded in this process: restart Python and import solprop_native before "
+        "pyfftw or any package that imports it. backend='numpy_ref', the "
+        "reference, doesn't load solprop_native, and is unthreaded and far slower"
     )
 
 check_cpu_baseline(Path(__file__).parent)
@@ -66,6 +67,19 @@ WAIT_POLICY = wait_policy()
 # Whether its threads are bound: not, unless the user placed them. Kokkos reads this
 # when the core starts it, just below, and otherwise prints a notice.
 PROC_BIND = proc_bind()
+
+# A wheel with more than one build registers the chosen one as ``._core``, so nothing
+# else knows which it is. The loader finds PyInit__core from the module's name, not the
+# file's.
+_STEM = select_variant(Path(__file__).parent)
+if _STEM != "_core":
+    _file = next(Path(__file__).parent.glob(f"{_STEM}.*"))
+    _spec = importlib.util.spec_from_file_location(f"{__name__}._core", _file)
+    if _spec is None or _spec.loader is None:  # pragma: no cover - a file has one
+        raise ImportError(f"cannot load {_file}")
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = _module
+    _spec.loader.exec_module(_module)
 
 from . import _core  # noqa: E402  (only after the processor check)
 
@@ -168,6 +182,7 @@ DRIVER_SURFACE: tuple[str, ...] = (
     "_bind_monitor",
     "_boundary_energies",
     "_dense_stages",
+    "_drop_held",
     "_finish",
     "_held_field",
     "_hoist",
@@ -244,7 +259,27 @@ draw again. Schema 41 (solprop SEP 40) adds ``KernelProblem.transverse``, the re
 transverse boundary, and ``reads_transverse_edge``: this backend carries the safety ramp
 and a requested collar in its operators, reads the transverse edge on the host from its
 state, and its Adams march holds its steps to the edge's next read and stops there.
-Schema 42 admits a neutral plasma channel (``PlasmaChannel.electrons_per_event`` of
+Schema 42 lets the problem's initial state be strided, a broadcast view of the block it
+repeats: ``set_initial`` takes a field of any strides, which the driver's load copies
+contiguous before it crosses.
+Schema 43 widens the boundary monitor's reading under the split scheme and adds the
+split collar's crossing limit. ``StepDriver`` keeps ``_split_found``, the energy and
+the guards' and collar's energies of the power the last step's split found, halfway
+through its factor, and caps adaptive steps with ``_split_capped``;
+``KernelProblem.split_crossing`` carries each bin's walk-off bucket and the launch's
+limit. This backend's finish forms the found sums in its removal pass;
+``bind_occupancy`` hands the state the bucket table, ``(n_modes * n_omega,)`` ``uint8``,
+and ``monitor_reading`` then returns ten numbers (the energy, four weighted sums, the
+removal, the four found sums) followed by the state's energy in each of the
+``SPLIT_RATE_BUCKETS`` buckets, ``10 + 128`` in all, where it returned six. The Adams
+march's bounds carry a required ``step_cap``, the cap the last check read, which every
+adaptive step is held to.
+Schema 45 widens this backend's far-field aperture rows from six constants to eleven,
+each row's own profile and shape among them, and drops the call's profile code: a
+far-field aperture set may hold other outlines beside circles. It also appends
+``SeparableOperator.user_rate``, the user's share of the spectral rate, which only the
+statistic ``absorbed_power`` reads, in a fifth channel.
+Schema 46 admits a neutral plasma channel (``PlasmaChannel.electrons_per_event`` of
 zero): this backend packs each channel's free-current constant from
 ``free_current_coefficient``, zero for such a channel, and its kernels admit a zero
 there, so a neutral channel keeps its loss current and adds no free current; the
@@ -417,6 +452,7 @@ SEPARABLE_OPERATOR_FIELDS: tuple[str, ...] = (
     "n_pol",
     "z_span",
     "kperp_rate",
+    "user_rate",
 )
 """Required shared spatial coefficients, frozen since schema 6.
 

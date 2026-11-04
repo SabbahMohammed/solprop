@@ -19,6 +19,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+from solprop.backends.registry import available
 from solprop.boundaries import SpatialAbsorber, SpatialAbsorberDesign
 from solprop.driver import Simulation
 from solprop.exceptions import BoundaryError, BoundaryWarning
@@ -29,7 +30,7 @@ from solprop.monitor import BoundaryCheck
 from solprop.output.hdf5 import resume
 from solprop.output.schema import PlaneStore
 from solprop.translate.transverse import _nodes_window
-from solprop.transverse_monitor import TransverseEdge, _row_energy
+from solprop.transverse_monitor import READ_RESOLUTION, TransverseEdge, _row_energy
 from test_transverse_resolution import LENGTH, suite
 
 
@@ -98,11 +99,12 @@ def test_the_reads_are_spaced_by_the_ceiling() -> None:
     assert record["largest_gap"] <= LENGTH / 16 * (1 + 1e-9)
 
 
-def test_numba_cpu_reads_the_edge_as_numpy_ref_does() -> None:
+@pytest.mark.skipif("native" not in available(), reason="native is not installed")
+def test_native_reads_the_edge_as_numpy_ref_does() -> None:
     # A backend that does not read it is tested in tests/backends/
-    # test_transverse_backends.py, with numba_cpu's reading switched off.
+    # test_transverse_backends.py, with numpy_ref's reading switched off.
     records = []
-    for backend in ("numpy_ref", "numba_cpu"):
+    for backend in ("numpy_ref", "native"):
         simulation = suite(1.5, None)
         simulation.settings = dataclasses.replace(simulation.settings, backend=backend)
         output, messages = quietly(simulation)
@@ -208,7 +210,7 @@ def test_the_start_of_run_summary_says_what_the_edge_can_report() -> None:
         return str(dict(summary.rows)["transverse edge"])
 
     assert "watched" in row("numpy_ref", BoundaryCheck())
-    assert "unwatched on numba_cpu" in row("numba_cpu", BoundaryCheck())
+    assert "unwatched on mlx" in row("mlx", BoundaryCheck())
     assert row("numpy_ref", None).endswith("off (boundary_check=None)")
 
 
@@ -563,3 +565,78 @@ def test_row_energy_sums_each_rows_squared_magnitude(dtype: type) -> None:
     sliced = rows[:, ::2]
     expected = np.sum(np.abs(sliced.astype(np.complex128)) ** 2, axis=1)
     np.testing.assert_allclose(_row_energy(sliced), expected, rtol=1e-6)
+
+
+def _faint_planes(space: LineGrid, faint: float) -> np.ndarray:
+    """Return a beam in three of 32 frequency planes, `faint` of it in the others."""
+    beam = _gaussian_line(space, 0.0, 20e-6)
+    weights = np.full(32, faint, dtype=float)
+    weights[10:13] = 1.0
+    return beam * weights
+
+
+def test_a_read_synthesises_only_the_planes_that_can_reach_its_resolution() -> None:
+    space = LineGrid(200e-6, 128)
+    edge = _edge(space, None)
+    state = _faint_planes(space, 1e-12)
+    _launched(edge, state)
+    flat = state.reshape(state.shape[0], -1)
+    kept = edge._occupied_planes(flat)  # pyright: ignore[reportPrivateUsage]
+    assert kept.shape == (128, 3)
+    np.testing.assert_array_equal(kept, flat[:, 10:13])
+
+
+def test_a_read_that_leaves_planes_out_reads_low_by_at_most_its_bound() -> None:
+    # READ_RESOLUTION's promise, against a read of every plane: the faint planes hold
+    # the whole of a face's light, the case that loses the most.
+    space = LineGrid(200e-6, 128)
+    beam = _faint_planes(space, 0.0)
+    spread = _gaussian_line(space, 195e-6, 5e-6) * np.ones(32)
+    state = beam + 1e-8 * spread * (np.abs(np.arange(32) - 11) > 1)
+    full, leaving_out = _edge(space, None), _edge(space, None)
+    _launched(full, beam)
+    _launched(leaving_out, beam)
+    flat = state.reshape(state.shape[0], -1)
+    assert leaving_out._occupied_planes(flat).shape[1] == 3  # pyright: ignore[reportPrivateUsage]
+    full._occupied_planes = lambda rows: rows  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    full.read(state, 1e-4)
+    leaving_out.read(state, 1e-4)
+    every = np.asarray(full.summary()["edge_max_raw"], dtype=float)
+    some = np.asarray(leaving_out.summary()["edge_max_raw"], dtype=float)
+    # An under-read to rounding (the kept planes' transforms are the same), by no more
+    # than the bound; the faint planes do reach the x+ face, so there is one to lose.
+    assert np.all(some <= every * (1 + 1e-12))
+    assert np.max(every - some) <= READ_RESOLUTION * full.budget**2
+    assert np.max(every - some) > 0.0
+
+
+def test_a_read_of_a_state_filling_its_planes_takes_no_copy() -> None:
+    space = LineGrid(200e-6, 128)
+    edge = _edge(space, None)
+    state = _faint_planes(space, 1.0)
+    _launched(edge, state)
+    flat = state.reshape(state.shape[0], -1)
+    assert edge._occupied_planes(flat) is flat  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_read_of_light_fainter_than_its_resolution_keeps_no_plane() -> None:
+    # Most of the launch has been absorbed: every plane is left out, and the read
+    # reports an empty edge rather than failing on an empty transform.
+    space = LineGrid(200e-6, 128)
+    edge = _edge(space, None)
+    beam = _faint_planes(space, 0.0)
+    _launched(edge, beam)
+    state = 1e-6 * beam
+    flat = state.reshape(state.shape[0], -1)
+    assert edge._occupied_planes(flat).shape == (128, 0)  # pyright: ignore[reportPrivateUsage]
+    edge.read(state, 1e-4)
+    assert np.all(np.asarray(edge.summary()["edge_max_raw"], dtype=float) == 0.0)
+
+
+def test_a_requested_collar_reads_every_plane() -> None:
+    # Its rate is credited as a removal, not judged against the warning.
+    space = LineGrid(200e-6, 128, collar_fraction=0.5)
+    edge = _edge(space, _collar(space, 1e-4))
+    state = _faint_planes(space, 1e-12)
+    flat = state.reshape(state.shape[0], -1)
+    assert edge._occupied_planes(flat) is flat  # pyright: ignore[reportPrivateUsage]

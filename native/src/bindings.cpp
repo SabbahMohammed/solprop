@@ -62,6 +62,7 @@ using ComplexInput =
     nb::ndarray<const std::complex<double>, nb::c_contig, nb::device::cpu>;
 using RealInput = nb::ndarray<const double, nb::c_contig, nb::device::cpu>;
 using BoolInput = nb::ndarray<const bool, nb::c_contig, nb::device::cpu>;
+using ByteInput = nb::ndarray<const std::uint8_t, nb::c_contig, nb::device::cpu>;
 using IndexInput = nb::ndarray<const std::uint64_t, nb::c_contig, nb::device::cpu>;
 using ComplexOutput =
     nb::ndarray<nb::numpy, std::complex<double>, nb::c_contig, nb::device::cpu>;
@@ -239,6 +240,8 @@ native::Problem problem_from(const nb::dict& values) {
           real_vector(exact_array<RealInput>(values["spatial_frame"]));
       result.spatial_spectral_rate =
           real_vector(exact_array<RealInput>(values["spatial_spectral_rate"]));
+      result.spatial_user_rate =
+          real_vector(exact_array<RealInput>(values["spatial_user_rate"]));
       result.spatial_absorber_rate =
           real_vector(exact_array<RealInput>(values["spatial_absorber_rate"]));
       result.spatial_kperp_rate =
@@ -982,6 +985,7 @@ march::Bounds march_bounds_from(const nb::dict values) {
     bounds.read_at = bounds.has_read_at ? nb::cast<double>(values["read_at"]) : 0.0;
     bounds.read_spacing =
         bounds.has_read_at ? nb::cast<double>(values["read_spacing"]) : 0.0;
+    bounds.step_cap = nb::cast<double>(values["step_cap"]);
     bounds.max_attempts = nb::cast<std::size_t>(values["max_attempts"]);
     bounds.max_seconds = nb::cast<double>(values["max_seconds"]);
     bounds.replay = nb::cast<bool>(values["replay"]);
@@ -1363,14 +1367,14 @@ public:
   }
   std::vector<double> aperture_statistics(const std::uint64_t flags,
                                           const std::vector<double>& apertures,
-                                          const int profile_code, const int exponent,
+                                          const int exponent,
                                           const std::vector<double>& regions,
                                           const double intensity_factor) {
     require_open();
     if (!general_state_)
       throw std::logic_error("far-field statistics require the general native state");
-    return general_state_->aperture_statistics(flags, apertures, profile_code, exponent,
-                                               regions, intensity_factor);
+    return general_state_->aperture_statistics(flags, apertures, exponent, regions,
+                                               intensity_factor);
   }
   void field_to_host(const std::span<native::Complex> destination) {
     require_open();
@@ -1574,6 +1578,14 @@ public:
     else
       state_->unbind_monitor();
   }
+  void bind_occupancy(const std::vector<unsigned char>& buckets,
+                      const std::size_t count) {
+    require_open();
+    if (general_state_)
+      general_state_->bind_occupancy(buckets, count);
+    else
+      state_->bind_occupancy(buckets, count);
+  }
   std::vector<double> monitor_reading() {
     require_open();
     return general_state_ ? general_state_->monitor_reading()
@@ -1754,8 +1766,8 @@ void shutdown_kokkos() {
 }
 
 // Kokkos::finalize runs Kokkos-FFT's hook, fftw_cleanup_threads, which destroys
-// FFTW's process-wide planner. Any other user of the same FFTW library (pyFFTW in
-// solprop's Numba backend) must have destroyed its plans by then, so the owned
+// FFTW's process-wide planner. Any other user of the same FFTW library must have
+// destroyed its plans by then, so the owned
 // runtime is finalised after the interpreter has released every Python object,
 // rather than from a Python exit handler, which runs before. Nothing here calls
 // Python.
@@ -1909,7 +1921,7 @@ nb::dict build_record() {
   nb::dict result;
   result["backend_commit"] = SOLPROP_NATIVE_BACKEND_COMMIT;
   result["solprop_built_against"] = SOLPROP_NATIVE_SOLPROP_BUILT_AGAINST;
-  result["schema_version"] = 42;
+  result["schema_version"] = 46;
   result["kokkos_version"] = SOLPROP_NATIVE_KOKKOS_VERSION;
   result["kokkos_fft_version"] = SOLPROP_NATIVE_KOKKOSFFT_VERSION;
   result["kokkos_kernels_version"] = SOLPROP_NATIVE_KOKKOSKERNELS_VERSION;
@@ -2296,6 +2308,8 @@ NB_MODULE(_core, module_) {
              const nb::gil_scoped_release release;
              state.hold_plane();
            })
+      .def("release_plane",
+           [](BoundState& self) { self.low_storage_state().release_plane(); })
       .def("held_to_host",
            [](BoundState& self) {
              auto& state = self.low_storage_state();
@@ -2830,25 +2844,24 @@ NB_MODULE(_core, module_) {
       .def(
           "aperture_statistics",
           [](BoundState& self, const std::uint64_t flags, const RealInput apertures,
-             const int profile_code, const int exponent, const RealInput regions,
+             const int exponent, const RealInput regions,
              const double intensity_factor) {
             if (apertures.ndim() != 2 || regions.ndim() != 2 || regions.shape(1) != 4)
               throw std::invalid_argument(
-                  "aperture tables must be (n_apertures, 6 + n_omega) and regions "
+                  "aperture tables must be (n_apertures, 11 + n_omega) and regions "
                   "(n_regions, 4)");
             const auto held_apertures = real_vector(apertures);
             const auto held_regions = real_vector(regions);
             std::vector<double> values;
             {
               const nb::gil_scoped_release release;
-              values =
-                  self.aperture_statistics(flags, held_apertures, profile_code,
-                                           exponent, held_regions, intensity_factor);
+              values = self.aperture_statistics(flags, held_apertures, exponent,
+                                                held_regions, intensity_factor);
             }
             return real_output(std::move(values), 1);
           },
-          "flags"_a, "apertures"_a.noconvert(), "profile_code"_a, "exponent"_a,
-          "regions"_a.noconvert(), "intensity_factor"_a)
+          "flags"_a, "apertures"_a.noconvert(), "exponent"_a, "regions"_a.noconvert(),
+          "intensity_factor"_a)
       .def(
           "statistics",
           [](BoundState& self, const std::uint64_t flags, const RealInput windows,
@@ -2903,6 +2916,18 @@ NB_MODULE(_core, module_) {
           },
           "weights"_a.noconvert(), "column_weights"_a.noconvert())
       .def("unbind_monitor", [](BoundState& self) { self.unbind_monitor(); })
+      // solprop #440: the split collar's walk-off bucket of each bin, whose energy
+      // per bucket a reading then returns beside the five.
+      .def(
+          "bind_occupancy",
+          [](BoundState& self, const ByteInput buckets, const std::size_t count) {
+            const auto count_in = element_count(buckets);
+            const std::vector<unsigned char> held(buckets.data(),
+                                                  buckets.data() + count_in);
+            const nb::gil_scoped_release release;
+            self.bind_occupancy(held, count);
+          },
+          "buckets"_a.noconvert(), "count"_a)
       .def("monitor_reading",
            [](BoundState& self) {
              std::vector<double> values;
