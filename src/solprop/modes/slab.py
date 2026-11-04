@@ -139,7 +139,8 @@ class SlabMode(_WallPairFill):
         distinct modes with their own effective index.
     loss : bool or float or callable
         Shared hollow-mode policy: model loss, no loss, a non-negative model scale,
-        or an absolute power attenuation in 1/m.
+        or an absolute power attenuation in 1/m. ``"gas"``, the capillary's
+        gas-only setting, is refused: this model does not implement it.
     cladding : GlassIndex or complex or None
         Plate index, positive imaginary part for absorption: a glass, a metal of
         :mod:`solprop.physdata.metals`, or a constant complex number. None selects

@@ -86,6 +86,16 @@ absorption between non-negative samples. Frequency derivatives differentiate the
 interpolants, including `1/omega` in the imaginary part. Evaluation outside the
 declared support raises `MaterialError`. Arrays are copied and made read-only.
 
+```{note}
+The linear operator evaluates every population over the grid's whole **active band**,
+$\omega_{\min}/2 < \omega < 1.1\,\omega_{\max}$ ([grids](../../dev/conventions.md)),
+not only between the requested wavelength limits: a field grid built for 200 nm to
+2 µm asks for 182 nm to 4 µm. A table for a trace absorber must declare that whole
+range, padding its cross-section with zeros (and its refractivity with a smooth
+continuation) where there is no data; a narrower table is refused when the operator is
+built, not when the species is.
+```
+
 ```{code-block} python
 import numpy as np
 from solprop.constants import C
@@ -231,7 +241,12 @@ the dilute limit gas intensity attenuation approaches `sum_s rho_s * sigma_s`.
 Capillary `loss=` controls total loss, including gas absorption: `False` removes it,
 a non-negative number scales it, and a callable replaces it. `loss=` does not touch the
 real shift of the mode index that the cladding causes, which stays as the mode model
-defines it.
+defines it, with one exception: `loss="gas"` keeps the gas absorption alone and forms
+the index with an ideal wall, which removes the wall's loss and its small real shift
+together ([gas absorption without the wall](../waveguides/capillary-model.md#gas-absorption-without-the-wall)).
+It is the setting for a trace absorber, such as ozone in air, whose attenuation must
+be resolved while the wall's must not act; the tube lattice takes it too, dropping its
+confinement term.
 
 The operator has three possible representations:
 
@@ -473,7 +488,8 @@ first order in susceptibility: `alpha_s = rho_s omega Im(gamma_s)/c`. The proces
 function multiplies this by spectral energy density and sums the modal contributions;
 spatial outputs use their spectral quadrature measure. Wall leakage and ionisation
 work are separate. `loss=False` removes all attributed loss, numeric `loss` scales it,
-and callable replacement of total loss has no justified species attribution. The
+`loss="gas"` keeps it whole (it removes only the wall's loss), and callable replacement
+of total loss has no justified species attribution. The
 last case is recorded explicitly and refused by the absorption accessor.
 
 Node fluence is `epsilon_0 c/2` times the fine-grid temporal sum of the physical

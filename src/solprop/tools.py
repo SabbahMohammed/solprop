@@ -1483,7 +1483,7 @@ def _capillary(  # noqa: PLR0913 - the capillary's keywords
         Mode family.
     model : {'full', 'reduced'}
         Marcatili model.
-    loss : bool, float or callable
+    loss : bool, float, 'gas' or callable
         Loss policy of the mode.
     cladding : GlassIndex, complex or None
         Cladding index; ``None`` is fused silica.
@@ -1557,7 +1557,7 @@ def capillary_params(  # noqa: PLR0913 - the capillary's keywords beside the pul
         Mode family.
     model : {'full', 'reduced'}, optional
         Marcatili model.
-    loss : bool, float or callable, optional
+    loss : bool, float, 'gas' or callable, optional
         Loss policy of the mode.
     cladding : GlassIndex, complex or None, optional
         Cladding index; ``None`` is fused silica.
@@ -1789,7 +1789,7 @@ def capillary_design(  # noqa: PLR0913 - the capillary's keywords beside the pul
         Radial index of the HE_1m mode.
     model : {'full', 'reduced'}, optional
         Marcatili model.
-    loss : bool, float or callable, optional
+    loss : bool, float, 'gas' or callable, optional
         Loss policy of the mode in the returned numbers.
     cladding : GlassIndex, complex or None, optional
         Cladding index; ``None`` is fused silica.

@@ -549,8 +549,10 @@ class ModeCollection(Displayed, Sequence[Mode]):
             How many modes, at least one; the modes are HE_11 to HE_1count.
         model : {'full', 'reduced'}, optional
             Which Marcatili model the modes use.
-        loss : bool, float or callable, optional
-            Whether to include propagation loss, or the loss to use.
+        loss : bool, float, 'gas' or callable, optional
+            Whether to include propagation loss, or the loss to use; ``"gas"``
+            keeps the fill's absorption without the wall's
+            (:class:`~solprop.modes.capillary.MarcatiliMode`).
         cladding : GlassIndex, complex or None, optional
             The cladding index; ``None`` is the package default silica.
         temperature : float or ZProfile, optional
@@ -718,8 +720,8 @@ class ModeCollection(Displayed, Sequence[Mode]):
             Number of modes, at least one, in radial order.
         lattice : TubeLattice
             Tube geometry shared by all modes.
-        loss : bool, float or callable, optional
-            Inherited mode loss policy.
+        loss : bool, float, 'gas' or callable, optional
+            Inherited mode loss policy; ``"gas"`` drops the confinement loss.
         cladding : GlassIndex, complex or None, optional
             Tube index; None selects the default silica.
         temperature : float, ZProfile or None, optional
@@ -793,7 +795,7 @@ class ModeCollection(Displayed, Sequence[Mode]):
             Positive radial indices, one per family.
         model : {'full', 'reduced'}, optional
             Marcatili approximation used by every mode.
-        loss : bool, float or callable, optional
+        loss : bool, float, 'gas' or callable, optional
             Propagation-loss specification passed to every mode.
         cladding : GlassIndex, complex or None, optional
             Cladding index; ``None`` selects the package default silica.

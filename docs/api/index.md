@@ -101,7 +101,9 @@ Every gas-filled hollow mode — the capillary's `MarcatiliMode`, the rectangula
 `RectMode`, the planar `SlabMode` and the antiresonant modes — takes its `loss=` in one
 vocabulary, `LossSpec`, and its full model floors the real part of the effective index
 at `EVANESCENT_INDEX_FLOOR` far below the band, where the square root would otherwise
-turn evanescent. Both are defined in {mod}`solprop.modes.fill` and are also importable
+turn evanescent. Its `"gas"` setting, the fill's absorption without the wall's loss, is
+implemented by the capillary and antiresonant modes and refused by name by the others
+([gas absorption without the wall](../guide/waveguides/capillary-model.md#gas-absorption-without-the-wall)). Both are defined in {mod}`solprop.modes.fill` and are also importable
 from {mod}`solprop.modes.capillary` and {mod}`solprop.modes`; they are documented here
 under both module paths.
 

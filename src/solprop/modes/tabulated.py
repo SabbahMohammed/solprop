@@ -12,7 +12,7 @@ retain Marcatili's transverse field. See ``docs/guide/waveguides/tabulated-modes
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import ClassVar, Literal
 
 import numpy as np
 from jaxtyping import Complex, Float, Inexact
@@ -542,6 +542,9 @@ class _TableMode(MarcatiliMode):
 
     table: IndexTable
     reference_wavelength: float | None = None
+    # A table's loss is the guide's, carried whole with its real index (and, filled,
+    # with the gas's): there is no wall term to drop, so loss="gas" is refused.
+    _GAS_LOSS_SUPPORTED: ClassVar[bool] = False
 
     def _check_arguments(self) -> None:
         """Refuse geometry or area declarations incompatible with a fixed table.

@@ -336,7 +336,8 @@ class RectMode(_WallPairFill):
         mode with a different index unless the geometry makes them degenerate.
     loss : bool or float or callable
         Shared hollow-mode policy: model loss, no loss, a non-negative model scale,
-        or an absolute power attenuation in 1/m.
+        or an absolute power attenuation in 1/m. ``"gas"``, the capillary's
+        gas-only setting, is refused: this model does not implement it.
     cladding : GlassIndex or complex or None
         Wall index, positive imaginary part for absorption. None selects fused silica.
     temperature : float, ZProfile or None

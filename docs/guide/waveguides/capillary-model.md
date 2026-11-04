@@ -173,6 +173,55 @@ $\beta$ and $\beta_1$ — stays fully analytic; only the imaginary part is diffe
 only if the callable carries no `derivative` attribute, in which case the constructor logs
 that it will.
 
+### Gas absorption without the wall
+
+`loss="gas"` keeps the absorption of the fill and removes the wall's. Where `False`
+removes every imaginary part, absorbing gas included, and `True` adds the wall's
+leakage to it, this setting forms the index with an **ideal wall**, $v_n = 0$, on which
+the transverse field vanishes at $r = a$ and nothing leaks:
+
+$$n_{\rm eff} = \sqrt{\varepsilon_{\rm co} - \left(\frac{u_{nm}}{ka}\right)^2}
+\quad\text{(full)},\qquad
+n_{\rm eff} = 1 + \frac{\varepsilon_{\rm co} - 1}{2} - \frac{c^2u_{nm}^2}{2\omega^2a^2}
+\quad\text{(reduced)}.$$
+
+The waveguide term, and with it the anomalous dispersion of the hollow core, is kept;
+only $\operatorname{Im}\varepsilon_{\rm co}$ attenuates the mode. With
+$\varepsilon_{\rm co} = 1 + \chi$, $\chi = \sum_s \rho_s\gamma_s$, and a real waveguide
+term, $2\operatorname{Re}n_{\rm eff}\operatorname{Im}n_{\rm eff} = \operatorname{Im}\chi$
+holds exactly, so the full model's power attenuation is
+
+$$\alpha = \frac{2\omega}{c}\operatorname{Im}n_{\rm eff}
+= \frac{1}{\operatorname{Re}n_{\rm eff}}\sum_s \rho_s\sigma_s,
+\qquad \sigma_s = \frac{\omega}{c}\operatorname{Im}\gamma_s,$$
+
+the gas's own absorption, which {meth}`~solprop.modes.fill.GasFillMixin.absorption_by_species`
+attributes to each population as it does with `True`. This is the setting for a
+calculation in which a trace absorber in the fill, ozone in air for example, must
+attenuate the light while the wall must not: a capillary model standing in for a
+low-loss guide of the same bore, or a run that isolates the absorber's effect. A
+transparent fill is then exactly lossless.
+
+The whole cladding term goes, its real part with its loss. For a transparent cladding
+$v_n$ is real, and the full model's $n_{\rm eff}^2$ carries $(u_{nm}s)^2(v_ns)^2$,
+$s = c/(\omega a)$, beside the leakage, so the ideal wall lowers
+$\operatorname{Re}n_{\rm eff}$ by about $(u_{nm}s)^2(v_ns)^2/2$: $3.3\times10^{-8}$ at
+800 nm in a 15 µm silica capillary, $5\times10^{-7}$ at 1.6 µm. That term is of second
+order in $1/(ka)$, beyond the accuracy of Marcatili's expansion, so either choice lies
+within the model's own error; dropping it makes the gas-only index exactly the
+ideal-wall one. The no-gain clamp and the evanescent floor act as they do for `True`.
+`dneff_dz` follows the setting. The [tube lattice](antiresonant.md) takes the same
+setting and drops its confinement term; a [coherent wall](coherent-wall.md), which is
+the loss model of its channels, refuses it, as do the rectangular, planar and
+tabulated modes, which do not implement it.
+
+```{code-block} python
+from solprop.modes import MarcatiliMode
+from solprop.physdata import Mixture
+
+gas_only = MarcatiliMode(15e-6, mixture=Mixture.air(6.0), loss="gas")
+```
+
 **The model's loss is never negative.** Where the complex square root lands on the branch
 that reads as gain — a cladding index below unity: a metal, or silica in the extreme
 ultraviolet, outside Marcatili's regime — the imaginary part is clamped at zero, its

@@ -317,7 +317,10 @@ error.
 - Tabulated modes from any mode solver.
 - Planar guides, including a planar guide resolved across its width, and a line
   geometry of free space.
-- Gas mixtures and steady-flow fills.
+- Gas mixtures and steady-flow fills, with absorbing populations of the caller's own,
+  and a capillary or tube-lattice loss that keeps the gas's absorption without the
+  wall's (`loss="gas"`,
+  [gas absorption without the wall](../waveguides/capillary-model.md#gas-absorption-without-the-wall)).
 - Vector Raman responses.
 - A frequency-dependent electronic response (opt-in, on every backend): optmat's
   whole hyperpolarisability fit evaluated at every quartet's frequencies, where Luna
