@@ -4,7 +4,8 @@
 
 """optmat's ionisation rates in a run: selection, reference field, record, diagnostic.
 
-Every run here is built and translated, or takes ten fixed steps on ``numpy_ref``.
+A single gas's rate as a neutral channel is here too. Every run here is built and
+translated, or takes at most ten fixed steps on ``numpy_ref``.
 The adapter is compared with direct calls of the optmat model it carries, never with
 optmat's values, so that a later optmat release changes both sides alike.
 """
@@ -24,10 +25,11 @@ from solprop.driver.simulation import (
     _check_rate_inputs,
     default_field_range,
 )
-from solprop.exceptions import MaterialError, MaterialRangeWarning
+from solprop.exceptions import DriverError, MaterialError, MaterialRangeWarning
 from solprop.grid import EnvelopeGrid, FieldGrid, FreeGrid
 from solprop.nonlinear import responses_for
 from solprop.nonlinear.envelope_plasma import EnvelopePlasmaResponse
+from solprop.nonlinear.ionisation import NeutralChannel
 from solprop.nonlinear.optmat_rates import OptmatRate
 from solprop.nonlinear.responses import PlasmaResponse
 from solprop.output import open_file
@@ -293,6 +295,46 @@ def test_a_new_fill_keeps_the_runs_reference_field():
     updated = simulation.with_mixture(mixture.with_fill(pressure=2.0))
     response = plasma_of(updated)
     assert response.potential == original.rate.ionisation_potential
+
+
+# ------------------------------------------------------- a neutral channel
+
+
+def test_a_single_gas_neutral_channel_reacts_and_frees_no_charge():
+    rate = OptmatRate("Ar", WAVELENGTH)
+    two_steps = FixedSchedule(np.full(2, LENGTH / 2))
+    neutral = capillary(plasma=NeutralChannel(rate), schedule=two_steps)
+    ionising = capillary(plasma=rate, schedule=two_steps)
+    response, twin = plasma_of(neutral), plasma_of(ionising)
+    assert isinstance(response, PlasmaResponse)
+    assert response.electrons_per_event == 0.0
+    assert response.neutral
+    assert twin.electrons_per_event == 1.0
+    # The channel's rate is bound to the input's peak field as the ionising one is.
+    assert isinstance(response.rate, OptmatRate)
+    assert response.rate.reference_field == twin.rate.reference_field
+    assert response.potential == twin.potential
+    (channel,) = neutral.translate().responses.population_channels
+    assert channel.electrons_per_event == 0.0
+    assert channel.free_current_coefficient == 0.0
+    events, freed = neutral.run(progress="none"), ionising.run(progress="none")
+    fraction = np.asarray(events["stats/species_ionisation"])
+    # A neutral event frees no charge: the density is the fraction times a zero
+    # weight, exactly zero at every plane, while the population still reacts.
+    assert np.all(np.asarray(events["stats/electron_density"]) == 0.0)
+    assert np.max(fraction[0]) > 1e-3
+    assert np.all(np.asarray(freed["stats/electron_density"]) > 0.0)
+    # The weight does not enter the fraction: at the entrance both runs evaluate the
+    # same rate on the same input field, so the fractions are the same numbers.
+    np.testing.assert_array_equal(
+        fraction[0], np.asarray(freed["stats/species_ionisation"])[0]
+    )
+
+
+def test_an_envelope_single_gas_refuses_a_neutral_channel():
+    with pytest.raises(DriverError, match="neutral channel") as refused:
+        capillary(plasma=NeutralChannel(OptmatRate("Ar", WAVELENGTH)), envelope=True)
+    assert refused.value.parameter == ("plasma", "envelope")
 
 
 # --------------------------------------------------------------- the record
