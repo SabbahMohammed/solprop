@@ -11,7 +11,6 @@ agree on a weakly nonlinear run, mode-averaged and mode-resolved. The absorber i
 synthetic: a constant cross-section rising linearly from nothing.
 """
 
-import importlib.util
 import math
 import warnings
 
@@ -19,6 +18,7 @@ import numpy as np
 import pytest
 
 from march_bounds import FIXED_ORDER, assert_matched, simulation_bound
+from solprop.backends import registry
 from solprop.constants import C
 from solprop.driver import Simulation
 from solprop.grid import EnvelopeGrid
@@ -48,9 +48,27 @@ PEAK_DENSITY = 2e23
 
 LATTICE = TubeLattice(210e-9, 5.55e-6, 6)
 
-BACKENDS = ["numpy_ref", "numba_cpu"]
-if importlib.util.find_spec("solprop_native") is not None:
-    BACKENDS.append("native")
+
+def runnable_backends() -> list[str]:
+    """Return the binary64 backends registered and installed here, in the table's order.
+
+    Read from the registry rather than written out, so that a retired backend (SEP 43
+    removes ``numba_cpu``) or one not installed (``native`` without its wheel) drops
+    out of the parametrisation instead of failing it.
+    """
+    return list(registry.available())
+
+
+BACKENDS = runnable_backends()
+
+
+def test_the_backends_are_read_from_the_registry(monkeypatch):
+    """A backend the registry does not know is not run (SEP 43 drops ``numba_cpu``)."""
+    known = dict(registry.BACKENDS)
+    known.pop("numba_cpu", None)
+    monkeypatch.setattr(registry, "BACKENDS", known)
+    assert "numba_cpu" not in runnable_backends()
+    assert runnable_backends()[0] == "numpy_ref"
 
 
 def fill() -> Mixture:
