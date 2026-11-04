@@ -3144,6 +3144,12 @@ _ENTRIES: Final[dict[str, tuple[Parameter, ...]]] = {
             "advanced",
             "The running-integral rule of the electron density.",
         ),
+        _keyword(
+            "electrons_per_event",
+            _FRACTION,
+            "advanced",
+            "Electrons each event frees: 1, or 0 for a neutral channel.",
+        ),
     ),
     "OptmatRate": _type(
         "nonlinear",
