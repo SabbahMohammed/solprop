@@ -198,9 +198,13 @@ _FLOOR_PROBES = 3
 _FLOOR_STEP_FRACTION = 1e-9
 # The endpoint (power-weight) table measures its floor across the whole span: along a
 # fill whose densities vary node by node its round-off differs from interval to
-# interval, and three central probes saw a twelfth of the worst (LupoAirOsc c6m_t900:
-# 2.3e-11 against 2.7e-10), so the tolerance sat below what one node interval could
-# be resolved to and the interval budget was spent on it. A probe costs three samples.
+# interval. On a six-species air fill varying along z, three central probes read
+# 2.3e-11, so the tolerance sat below what one node interval could be resolved to and
+# the interval budget was spent on it (747 intervals). The 32 probes across the span
+# read 2.6e-9, about a hundred times more, and the table resolves at 2.1e-8 in 292
+# intervals; a scan of 512 probes reads 4.9e-9, while 128 read 8.3e-10. The floor
+# varies from probe to probe, so no layout is sure to see the worst, and endpoint_phi
+# keeps its relax loop. A probe costs three samples.
 _ENDPOINT_FLOOR_PROBES = 32
 # The deepest dip below zero, relative to a table's largest value, that profile_table
 # lifts as rounding. The build itself drops trailing coefficients up to
