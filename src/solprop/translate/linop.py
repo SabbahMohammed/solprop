@@ -1987,6 +1987,13 @@ def endpoint_phi(
             tol=tol,
             mandatory_breakpoints=linear.phi_breakpoints[1:-1],
         )
+    if endpoint.budget_exceeded:
+        logger.warning(
+            "Phi: the %s exhausted the interval budget even at %.1e; the table carries "
+            "unresolved intervals and its accuracy is not stated",
+            quantity,
+            tol,
+        )
     coefficients = endpoint.coefficients.copy()
     coefficients[:, 0] -= entrance
     endpoint = replace(endpoint, coefficients=coefficients)

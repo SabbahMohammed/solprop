@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import dataclasses
 import itertools
 import logging
 import math
@@ -38,9 +39,10 @@ from solprop.profiles import (
 )
 from solprop.pulses import GaussianPulse
 from solprop.translate import linop
-from solprop.translate.chebyshev import DEFAULT_TOL, PiecewiseChebyshev
+from solprop.translate.chebyshev import DEFAULT_TOL, PiecewiseChebyshev, build
 from solprop.translate.linop import (
     DEFAULT_MARGIN,
+    MAX_TOL,
     ROUNDOFF_SAFETY,
     LinearOperator,
     _checked_representation,
@@ -583,30 +585,90 @@ def test_the_floor_can_be_measured_across_the_span():
     assert 1e-12 < _roundoff_floor(sample, 1.0, probes=32) < 1e-10
 
 
+@pytest.fixture(scope="module")
+def short_gradient_z_table(gradient_mode):
+    """The gradient's z table on a 50 fs grid, whose 73 frequencies keep builds cheap.
+
+    An endpoint build that exhausts its 512-interval budget costs a few tenths of a
+    second here, against about a second on the 577 frequencies of `field_grid`.
+    """
+    grid = FieldGrid.from_limits(0.2, 800e-9, (400e-9, 2e-6), 50e-15)
+    return build_phi(
+        gradient_mode, grid, Frame.comoving(grid), z_max=0.2, representation="table"
+    )
+
+
+def _recorded_builds(monkeypatch, *, exhausted=False):
+    """Record the tolerance and the budget flag of every table linop builds.
+
+    With `exhausted`, every table is flagged as having run out of its budget.
+    """
+    builds = []
+
+    def recording(*args, **kwargs):
+        table = build(*args, **kwargs)
+        if exhausted:
+            table = dataclasses.replace(table, budget_exceeded=True)
+        builds.append((kwargs["tol"], table.budget_exceeded))
+        return table
+
+    monkeypatch.setattr(linop, "build", recording)
+    return builds
+
+
+def _noise_no_probe_saw(table):
+    """Noise of 2e-13 between two of the 32 probe centres (0.00984 and 0.01641 m).
+
+    The floor reads the smooth part's round-off only, and the first endpoint table
+    exhausts its budget on the noise; a decade looser resolves it.
+    """
+    sample = _windowed_noise(table.value_shape, (0.0105, 0.0160), 2e-13)
+    assert _roundoff_floor(sample, table.z_span[1], probes=32) < 1e-15
+    return sample
+
+
 def test_the_endpoint_table_relaxes_its_tolerance_on_noise_no_probe_saw(
-    gradient_z_table, caplog
+    short_gradient_z_table, monkeypatch, caplog
 ):
-    # The window lies between two of the 32 probe centres (0.00984 and 0.01641 m of the
-    # 0.21 m span): the floor reads the smooth part's round-off only, the table cannot
-    # resolve the noise and
-    # it exhausts its budget, and the tolerance is relaxed by decades until it resolves.
-    shape = gradient_z_table.value_shape
-    sample = _windowed_noise(shape, (0.0105, 0.0160), 1e-9)
-    assert _roundoff_floor(sample, gradient_z_table.z_span[1], probes=32) < 1e-15
+    sample = _noise_no_probe_saw(short_gradient_z_table)
+    builds = _recorded_builds(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="solprop.translate.linop"):
         table = endpoint_phi(
-            gradient_z_table, sample, None, None, quantity="noisy weight"
+            short_gradient_z_table, sample, None, None, quantity="noisy weight"
         )
-    assert "noisy weight exhausted the interval budget" in caplog.text
+    # One relaxation, and the table it ends with is resolved.
+    assert [exceeded for _, exceeded in builds] == [True, False]
+    assert builds[1][0] == pytest.approx(10.0 * builds[0][0])
+    assert "noisy weight exhausted the interval budget;" in caplog.text
+    assert "accuracy is not stated" not in caplog.text
     z = np.linspace(0.0, 0.2, 41)
     expected = np.stack([sample(float(one)) - sample(0.0) for one in z])
     added = np.stack(
         [
-            table.polynomial(float(one)) - gradient_z_table.polynomial(float(one))
+            table.polynomial(float(one)) - short_gradient_z_table.polynomial(float(one))
             for one in z
         ]
     )
-    assert np.max(np.abs(added - expected)) < 1e-6
+    assert np.max(np.abs(added - expected)) < 1e-11
+
+
+def test_an_endpoint_table_exhausted_at_the_loosest_tolerance_says_so(
+    short_gradient_z_table, monkeypatch, caplog
+):
+    # A table whose budget runs out at every tolerance is relaxed by decades up to
+    # MAX_TOL and kept there, and the log says that its accuracy is not stated, as D's
+    # table does. The exhaustion is flagged on smooth samples, which build in a few
+    # intervals: adding a really exhausted table to Phi costs seconds.
+    sample = _windowed_noise(short_gradient_z_table.value_shape, (0.0, 0.0), 0.0)
+    builds = _recorded_builds(monkeypatch, exhausted=True)
+    with caplog.at_level(logging.WARNING, logger="solprop.translate.linop"):
+        endpoint_phi(short_gradient_z_table, sample, None, None, quantity="weight")
+    tolerances = [tol for tol, _ in builds]
+    assert tolerances[-1] == MAX_TOL
+    assert np.allclose(np.diff(np.log10(tolerances[:-1])), 1.0)
+    assert caplog.text.count("weight exhausted the interval budget;") == len(builds) - 1
+    assert f"weight exhausted the interval budget even at {MAX_TOL:.1e}" in caplog.text
+    assert "accuracy is not stated" in caplog.text
 
 
 def test_an_exhausted_interval_budget_relaxes_the_tolerance_and_warns(
