@@ -561,8 +561,14 @@ def test_validate_rejects_a_profile_table_over_a_different_range(soliton, gradie
         # Exactly zero at both ends, which tabulate to exact zeros, and negative
         # between them.
         lambda u: 5e25 * u * (u - 0.5) * (1.0 - u),
+        # Below zero at its ends by 1e-12 of its scale: small, and still not rounding.
+        lambda u: 5e25 * u * (1.0 - u) - 1.25e13,
     ],
-    ids=["below zero at its end", "below zero between vacuum ends"],
+    ids=[
+        "below zero at its end",
+        "below zero between vacuum ends",
+        "1e-12 of its scale below zero",
+    ],
 )
 def test_validate_still_rejects_a_negative_density(gradient, density):
     start, end = gradient.responses.density.z_span
@@ -570,6 +576,27 @@ def test_validate_still_rejects_a_negative_density(gradient, density):
     table = profile_table(path, start, end)
     with pytest.raises(TranslationError, match=r"total density must lie in \[0"):
         corrupt(gradient, "responses", "density", table).validate()
+
+
+def test_validate_accepts_a_density_whose_fit_rings_below_zero_by_rounding(gradient):
+    """A vacuum stretch whose unresolved interval rings 1e-19 of the scale below zero.
+
+    The fit of a corner the split cannot resolve, 10 pm inside the stretch's declared
+    edge, rings to about -2e3 m^-3 against 1e22; ``profile_table`` lifts it to zero.
+    """
+    start, end = gradient.responses.density.z_span
+    left, right = 0.1, 0.1 + 1.4e-7
+
+    def density(z):
+        z = np.asarray(z, dtype=float)
+        corner = 1e4 * np.maximum(0.0, 1.0 - (z - left) / 1e-11)
+        return np.where((z >= left) & (z <= right), corner, 1e22)
+
+    path = FromCallable(density, (0.0, 0.2), kinks=np.array([left, right]))
+    fitted = build(path.__call__, start, end, mandatory_breakpoints=[left, right])
+    assert float(np.min(fitted.at_positions(np.linspace(left, right, 2001)))) < 0.0
+    table = profile_table(path, start, end)
+    corrupt(gradient, "responses", "density", table).validate()
 
 
 def test_validate_walks_the_raman_rate_tables_too(raman_soliton, gradient):

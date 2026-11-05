@@ -202,6 +202,12 @@ _FLOOR_STEP_FRACTION = 1e-9
 # 2.3e-11 against 2.7e-10), so the tolerance sat below what one node interval could
 # be resolved to and the interval budget was spent on it. A probe costs three samples.
 _ENDPOINT_FLOOR_PROBES = 32
+# The deepest dip below zero, relative to a table's largest value, that profile_table
+# lifts as rounding. The build itself drops trailing coefficients up to
+# 8 log2(2 n_deg) ulp of an interval's scale as transform noise (chebyshev._trim), 56
+# ulp at the default highest degree 64; 64 is the power of two above it. A path that
+# goes further below zero is not rounding, and its table is refused.
+_ROUNDOFF_DIP = 64.0 * float(np.finfo(np.float64).eps)
 
 _OperatorAt = Callable[[float], Complex[np.ndarray, "n_batch n_modes n_pol n_omega"]]
 _OperatorOf = Callable[
@@ -747,6 +753,15 @@ def profile_table(
     refused. A path that leaves zero too steeply for its inset sample to be round-off
     (a square-root vacuum end) keeps the table the fit gave.
 
+    A path that touches zero can still leave its table just below zero inside an
+    interval: a curve that meets a zero end with zero slope, whose pinned end leaves
+    its slope a rounding off, or an unresolved interval whose fit rings about a vacuum.
+    Where every such dip is within 64 ulp of the table's largest value, each dipping
+    interval is lifted by its own dip, which the table's rounding cannot tell from
+    zero, so its smallest value is zero (a pinned end in it then sits at most that dip
+    above zero). A table that dips any further keeps the fit, and the domain check
+    refuses it.
+
     Parameters
     ----------
     profile : solprop.profiles.ZProfile
@@ -773,18 +788,111 @@ def profile_table(
     """
     table = tabulate(profile.__call__, z0, z1, kinks=profile.breakpoints, tol=tol)
     vacuum = np.asarray(profile(table.breakpoints)) == 0.0
-    if not np.any(vacuum):
+    if np.any(vacuum):
+        coefficients = table.coefficients.copy()
+        for index, degree in enumerate(table.degrees):
+            # A degree-0 interval with a zero edge is either exactly zero already or a
+            # constant that is not, which no correction within tol could make zero.
+            if degree >= 1 and (vacuum[index] or vacuum[index + 1]):
+                row = coefficients[index, : degree + 1]
+                row[:] = _zero_edges(
+                    row, bool(vacuum[index]), bool(vacuum[index + 1]), tol
+                )
+        if not np.array_equal(coefficients, table.coefficients):
+            table = replace(table, coefficients=_readonly(coefficients))
+    return _lift_roundoff_dips(table)
+
+
+def _scalar_extremes(
+    coefficients: Float[np.ndarray, " n_deg"],
+) -> Float[np.ndarray, " n_extremes"]:
+    """Return a real Chebyshev series' values at its ends and real stationary points.
+
+    These hold its smallest and largest values on ``[-1, 1]``. They are evaluated as
+    :func:`numpy.polynomial.chebyshev.chebval` evaluates them, which is how the
+    problem's domain check reads a scalar table and how :func:`profile_table` checks the
+    tables it lifts.
+
+    Parameters
+    ----------
+    coefficients : numpy.ndarray
+        One interval's Chebyshev coefficients up to its degree, shape ``(n_deg,)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The values at ``x = -1``, at every real stationary point inside ``(-1, 1)`` and
+        at ``x = 1``, in the units of the coefficients.
+    """
+    roots = chebyshev_basis.chebroots(chebyshev_basis.chebder(coefficients))
+    interior = np.real(roots[np.isreal(roots) & (np.abs(roots) < 1)])
+    return chebyshev_basis.chebval(np.r_[-1.0, interior, 1.0], coefficients)
+
+
+def _lift_roundoff_dips(table: PiecewiseChebyshev) -> PiecewiseChebyshev:
+    """Return a scalar table with its dips below zero by rounding lifted to zero.
+
+    Parameters
+    ----------
+    table : solprop.translate.chebyshev.PiecewiseChebyshev
+        A real scalar table.
+
+    Returns
+    -------
+    solprop.translate.chebyshev.PiecewiseChebyshev
+        `table` itself when it does not dip below zero, or dips further than
+        ``_ROUNDOFF_DIP`` of its largest value anywhere; otherwise the table with
+        each dipping interval lifted by its dip.
+    """
+    rows = [
+        table.coefficients[index, : int(degree) + 1]
+        for index, degree in enumerate(table.degrees)
+    ]
+    extremes = [_scalar_extremes(row) for row in rows]
+    if min(float(np.min(values)) for values in extremes) >= 0.0:
         return table
+    allowance = _ROUNDOFF_DIP * max(
+        float(np.max(np.abs(values))) for values in extremes
+    )
     coefficients = table.coefficients.copy()
-    for index, degree in enumerate(table.degrees):
-        # A degree-0 interval with a zero edge is either exactly zero already or a
-        # constant that is not, which no correction within tol could make zero.
-        if degree >= 1 and (vacuum[index] or vacuum[index + 1]):
-            row = coefficients[index, : degree + 1]
-            row[:] = _zero_edges(row, bool(vacuum[index]), bool(vacuum[index + 1]), tol)
-    if np.array_equal(coefficients, table.coefficients):
-        return table
+    for index, (row, values) in enumerate(zip(rows, extremes, strict=True)):
+        if float(np.min(values)) < 0.0:
+            lifted = _lift(row, allowance)
+            if lifted is None:
+                return table
+            coefficients[index, : row.size] = lifted
     return replace(table, coefficients=_readonly(coefficients))
+
+
+def _lift(
+    row: Float[np.ndarray, " n_deg"], allowance: float
+) -> Float[np.ndarray, " n_deg"] | None:
+    """Raise one interval's constant term until its smallest value is not negative.
+
+    The first step adds the dip itself; the rounding of the evaluation can leave a
+    residue of a few ulp of its intermediates, which the next steps add in turn, each
+    at least one ulp of the constant term, so the evaluated minimum rises every time.
+
+    Parameters
+    ----------
+    row : numpy.ndarray
+        The interval's Chebyshev coefficients up to its degree.
+    allowance : float
+        The largest total lift, in the units of the coefficients.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The lifted coefficients, or None when the lift would exceed `allowance`.
+    """
+    lifted = row.copy()
+    deficit = -float(np.min(_scalar_extremes(lifted)))
+    while deficit > 0.0:
+        if float(lifted[0] - row[0]) + deficit > allowance:
+            return None
+        lifted[0] += max(deficit, float(np.spacing(abs(lifted[0]))))
+        deficit = -float(np.min(_scalar_extremes(lifted)))
+    return lifted
 
 
 def _zero_edges(

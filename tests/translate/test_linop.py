@@ -37,6 +37,7 @@ from solprop.profiles import (
     PressureGradient,
 )
 from solprop.pulses import GaussianPulse
+from solprop.translate import linop
 from solprop.translate.chebyshev import DEFAULT_TOL, PiecewiseChebyshev
 from solprop.translate.linop import (
     DEFAULT_MARGIN,
@@ -46,6 +47,7 @@ from solprop.translate.linop import (
     _operator_of_parameters,
     _operator_sampler,
     _roundoff_floor,
+    _scalar_extremes,
     build_phi,
     constant_phi,
     declared_paths,
@@ -721,6 +723,93 @@ def test_a_square_root_vacuum_end_keeps_its_fitted_table():
     table = profile_table(path, 0.0, 1.0)
     assert np.array_equal(table.coefficients, fitted.coefficients)
     assert _edge_values(table)[-1, 1] > 0.0
+
+
+def _lowest_and_largest(table):
+    """Return a table's lowest value and largest magnitude, as validate reads them."""
+    values = np.concatenate(
+        [
+            _scalar_extremes(row[: int(degree) + 1])
+            for row, degree in zip(table.coefficients, table.degrees, strict=True)
+        ]
+    )
+    return float(values.min()), float(np.abs(values).max())
+
+
+def _shape_preserving_end(start: float, slope: float) -> FromCallable:
+    """Return a cubic from `start` to an exact zero met with zero slope, zero beyond.
+
+    It is how a shape-preserving interpolant of a fill reaches a node where a species
+    is absent. The pinned zero end leaves the table's slope there a rounding off, and
+    the table dips just inside it.
+    """
+    left, right = 0.081, 0.082125
+    width = right - left
+
+    def density(z):
+        unit = (np.asarray(z, dtype=float) - left) / width
+        cubic = start * (2 * unit**3 - 3 * unit**2 + 1) + width * slope * (
+            unit**3 - 2 * unit**2 + unit
+        )
+        return np.where(unit < 0.0, start, np.where(unit <= 1.0, cubic, 0.0))
+
+    return FromCallable(density, (0.0, 0.3), kinks=np.array([left, right]))
+
+
+def _vacuum_stretch(scale: float, inside: float) -> FromCallable:
+    """Return `scale` but on a 0.14 um stretch that falls from `inside` to 0 in 10 pm.
+
+    The corner is too close to the stretch's declared edge for the split to resolve:
+    the interval is accepted at its narrowest and its fit rings about the vacuum, as a
+    spline floored at zero rings when its root is declared a few picometres away.
+    """
+    left, right = 0.1, 0.1 + 1.4e-7
+
+    def density(z):
+        z = np.asarray(z, dtype=float)
+        corner = inside * np.maximum(0.0, 1.0 - (z - left) / 1e-11)
+        return np.where((z >= left) & (z <= right), corner, scale)
+
+    return FromCallable(density, (0.0, 1.0), kinks=np.array([left, right]))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        _shape_preserving_end(1e5, -1.5e5 / 1.125e-3),
+        _vacuum_stretch(1e22, 1e4),
+    ],
+    ids=["zero slope at a zero end", "ringing about a vacuum"],
+)
+def test_a_dip_below_zero_by_rounding_is_lifted_to_zero(monkeypatch, path):
+    """A non-negative path whose table dips below zero by rounding tabulates at >= 0."""
+    start, end = path.span
+    table = profile_table(path, start, end)
+    monkeypatch.setattr(linop, "_lift_roundoff_dips", lambda table: table)
+    unlifted = profile_table(path, start, end)
+    lowest, largest = _lowest_and_largest(unlifted)
+    assert -64 * EPS * largest <= lowest < 0.0
+    assert _lowest_and_largest(table)[0] >= 0.0
+    assert np.all(table.at_positions(np.linspace(start, end, 4001)) >= 0.0)
+    change = np.abs(table.coefficients - unlifted.coefficients).sum(axis=1)
+    assert 0.0 < float(change.max()) <= 64 * EPS * largest
+
+
+@pytest.mark.parametrize(("dip", "lifted"), [(32, True), (128, False)])
+def test_only_a_dip_within_64_ulp_of_the_scale_is_lifted(dip, lifted):
+    """A stretch held below zero is lifted within the bound and kept beyond it."""
+    left, right = 0.4, 0.6
+
+    def density(z):
+        z = np.asarray(z, dtype=float)
+        return np.where((z >= left) & (z <= right), -dip * EPS * 3e25, 3e25)
+
+    path = FromCallable(density, (0.0, 1.0), kinks=np.array([left, right]))
+    fitted = tabulate(path.__call__, 0.0, 1.0, kinks=path.breakpoints)
+    table = profile_table(path, 0.0, 1.0)
+    assert _lowest_and_largest(fitted)[0] == -dip * EPS * 3e25
+    assert _lowest_and_largest(table)[0] == (0.0 if lifted else -dip * EPS * 3e25)
+    assert np.array_equal(table.coefficients, fitted.coefficients) is not lifted
 
 
 # ------------------------------------------------------------------------- verification

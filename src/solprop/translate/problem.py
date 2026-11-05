@@ -124,6 +124,7 @@ from solprop.translate.general import (
 from solprop.translate.linop import (
     DEFAULT_MARGIN,
     LinearOperator,
+    _scalar_extremes,
     build_phi,
     delta_phi,
     power_weight_row,
@@ -5586,14 +5587,7 @@ def _check_scalar_domain(
     if table.value_shape != ():
         raise TranslationError(f"{name} must be a scalar table")
     for row, degree in zip(table.coefficients, table.degrees, strict=True):
-        coefficients = row[: int(degree) + 1]
-        roots = np.polynomial.chebyshev.chebroots(
-            np.polynomial.chebyshev.chebder(coefficients)
-        )
-        interior = np.real(roots[np.isreal(roots) & (np.abs(roots) < 1)])
-        values = np.polynomial.chebyshev.chebval(
-            np.r_[-1.0, interior, 1.0], coefficients
-        )
+        values = _scalar_extremes(row[: int(degree) + 1])
         if np.any(values < 0.0) or np.any(values > upper):
             raise TranslationError(f"{name} must lie in [0, {upper}]")
 

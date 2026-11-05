@@ -277,8 +277,10 @@ scalar-valued `translate.chebyshev.PiecewiseChebyshev` over the same z range as 
 built by `translate.linop.tabulate`. A backend evaluates it with one Clenshaw pass on the
 host and never sees a Python `ZProfile`. Where a path is exactly zero at an interval edge
 (a declared vacuum), `translate.linop.profile_table` makes its table exactly zero there
-too, within the table's tolerance, so the non-negativity check on density tables never
-meets the fit's rounding.
+too, within the table's tolerance, and where a table still dips below zero by at most 64
+ulp of its largest value (a zero met with zero slope, a fit ringing about a vacuum) it
+lifts each dipping interval by its dip, so the non-negativity check on density tables
+never meets the fit's rounding. A deeper dip is kept, and the check refuses it.
 
 `validate()` checks: all arrays finite, read-only, C-contiguous (but `initial.field0`,
 which may be a broadcast view: section 6), and of the stated dtype
