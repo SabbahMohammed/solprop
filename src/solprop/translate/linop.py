@@ -196,6 +196,12 @@ back.
 _AGREEMENT_PROBES = 17
 _FLOOR_PROBES = 3
 _FLOOR_STEP_FRACTION = 1e-9
+# The endpoint (power-weight) table measures its floor across the whole span: along a
+# fill whose densities vary node by node its round-off differs from interval to
+# interval, and three central probes saw a twelfth of the worst (LupoAirOsc c6m_t900:
+# 2.3e-11 against 2.7e-10), so the tolerance sat below what one node interval could
+# be resolved to and the interval budget was spent on it. A probe costs three samples.
+_ENDPOINT_FLOOR_PROBES = 32
 
 _OperatorAt = Callable[[float], Complex[np.ndarray, "n_batch n_modes n_pol n_omega"]]
 _OperatorOf = Callable[
@@ -1791,9 +1797,12 @@ def endpoint_phi(
     TranslationError
         If an expansion's endpoint quantity cannot be resolved on its parameter box.
     """
-    # Unlike D, this logarithm has no frame cancellation. Measure its own floor;
-    # eight rounding units cover sampling and the coefficient transform.
-    tol = max(8 * np.finfo(float).eps, 8 * _roundoff_floor(sample, linear.z_span[1]))
+    # Unlike D, this logarithm has no frame cancellation. Measure its own floor across
+    # the span; eight rounding units cover sampling and the coefficient transform.
+    tol = max(
+        8 * np.finfo(float).eps,
+        8 * _roundoff_floor(sample, linear.z_span[1], probes=_ENDPOINT_FLOOR_PROBES),
+    )
     if linear.phi_expansion is not None:
         if linear.phi_expansion.endpoint_degrees is not None:
             return linear
@@ -1854,6 +1863,22 @@ def endpoint_phi(
         tol=tol,
         mandatory_breakpoints=linear.phi_breakpoints[1:-1],
     )
+    # As D's table: noise the probes did not see exhausts the budget, and the
+    # tolerance is relaxed by decades rather than the table left unresolved.
+    while endpoint.budget_exceeded and tol < MAX_TOL:
+        tol = min(tol * 10.0, MAX_TOL)
+        logger.warning(
+            "Phi: the %s exhausted the interval budget; relaxing its tolerance to %.1e "
+            "and rebuilding",
+            quantity,
+            tol,
+        )
+        endpoint = build(
+            correction,
+            *linear.z_span,
+            tol=tol,
+            mandatory_breakpoints=linear.phi_breakpoints[1:-1],
+        )
     coefficients = endpoint.coefficients.copy()
     coefficients[:, 0] -= entrance
     endpoint = replace(endpoint, coefficients=coefficients)
@@ -2404,13 +2429,17 @@ def _shared_frame(reference: Mode, frame: Frame, z: float) -> Frame:
     return replace(frame, beta0=beta0, beta1=beta1)
 
 
-def _roundoff_floor(operator_at: _OperatorAt, span: float) -> float:
+def _roundoff_floor(
+    operator_at: _OperatorAt, span: float, *, probes: int | None = None
+) -> float:
     """Estimate the relative round-off of one evaluation of the operator.
 
     A second difference over a spacing far below any physical scale isolates the noise:
     the smooth part contributes ``delta**2 |D''|``, which at a spacing of 1e-9 of the
     span is some fifteen orders below the round-off, while the noise survives at its
-    full size. The estimate is taken at three positions and the largest kept.
+    full size. The estimate is taken at three central positions (a quarter, half and
+    three quarters of the span), or at ``probes`` positions spread across it, and the
+    largest kept.
 
     It is reported in the **acceptance test's own norm**: per element against that
     element's own value, with the comparison scale floored at
@@ -2429,6 +2458,9 @@ def _roundoff_floor(operator_at: _OperatorAt, span: float) -> float:
         ``z -> D(z)`` in the canonical layout.
     span : float
         End of the tabulated range, m.
+    probes : int, optional
+        Probe at the centres of this many equal parts of the span instead of the three
+        central positions.
 
     Returns
     -------
@@ -2437,7 +2469,12 @@ def _roundoff_floor(operator_at: _OperatorAt, span: float) -> float:
     """
     delta = _FLOOR_STEP_FRACTION * span
     worst = 0.0
-    for fraction in np.linspace(0.25, 0.75, _FLOOR_PROBES):
+    fractions = (
+        np.linspace(0.25, 0.75, _FLOOR_PROBES)
+        if probes is None
+        else (np.arange(probes) + 0.5) / probes
+    )
+    for fraction in fractions:
         centre = float(fraction * span)
         low = operator_at(centre - delta)
         middle = operator_at(centre)

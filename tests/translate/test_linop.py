@@ -50,6 +50,7 @@ from solprop.translate.linop import (
     constant_phi,
     declared_paths,
     delta_phi,
+    endpoint_phi,
     parameter_paths,
     profile_table,
     rate_weights,
@@ -557,6 +558,53 @@ def test_the_floor_is_measured_relative_to_the_operator(field_grid, gradient_mod
     # is orders worse and that is the number an interpolant cannot resolve past.
     assert 1e-12 < floor < 1e-5
     assert ROUNDOFF_SAFETY * floor > 1e-11
+
+
+def _windowed_noise(value_shape, window, amplitude):
+    """A smooth endpoint function with high-frequency noise in ``window`` only."""
+
+    def sample(z):
+        base = (1.0 + 0.1 * z) * np.ones(value_shape, dtype=complex)
+        if window[0] <= z <= window[1]:
+            return base * (1.0 + amplitude * np.sin(1e13 * z))
+        return base
+
+    return sample
+
+
+def test_the_floor_can_be_measured_across_the_span():
+    # Noise away from the three central probes is invisible to them, not to probes
+    # spread across the span (the endpoint table's: a fill whose densities vary node by
+    # node has its own round-off in every node interval).
+    sample = _windowed_noise((1, 1, 1, 4), (0.04, 0.12), 1e-11)
+    assert _roundoff_floor(sample, 1.0) == 0.0
+    assert 1e-12 < _roundoff_floor(sample, 1.0, probes=32) < 1e-10
+
+
+def test_the_endpoint_table_relaxes_its_tolerance_on_noise_no_probe_saw(
+    gradient_z_table, caplog
+):
+    # The window lies between two of the 32 probe centres (0.00984 and 0.01641 m of the
+    # 0.21 m span): the floor reads the smooth part's round-off only, the table cannot
+    # resolve the noise and
+    # it exhausts its budget, and the tolerance is relaxed by decades until it resolves.
+    shape = gradient_z_table.value_shape
+    sample = _windowed_noise(shape, (0.0105, 0.0160), 1e-9)
+    assert _roundoff_floor(sample, gradient_z_table.z_span[1], probes=32) < 1e-15
+    with caplog.at_level(logging.WARNING, logger="solprop.translate.linop"):
+        table = endpoint_phi(
+            gradient_z_table, sample, None, None, quantity="noisy weight"
+        )
+    assert "noisy weight exhausted the interval budget" in caplog.text
+    z = np.linspace(0.0, 0.2, 41)
+    expected = np.stack([sample(float(one)) - sample(0.0) for one in z])
+    added = np.stack(
+        [
+            table.polynomial(float(one)) - gradient_z_table.polynomial(float(one))
+            for one in z
+        ]
+    )
+    assert np.max(np.abs(added - expected)) < 1e-6
 
 
 def test_an_exhausted_interval_budget_relaxes_the_tolerance_and_warns(
