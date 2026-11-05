@@ -279,8 +279,12 @@ host and never sees a Python `ZProfile`. Where a path is exactly zero at an inte
 (a declared vacuum), `translate.linop.profile_table` makes its table exactly zero there
 too, within the table's tolerance, and where a table still dips below zero by at most 64
 ulp of its largest value (a zero met with zero slope, a fit ringing about a vacuum) it
-lifts each dipping interval by its dip, so the non-negativity check on density tables
-never meets the fit's rounding. A deeper dip is kept, and the check refuses it.
+lifts each dipping interval by its dip, so the non-negativity check on density and
+pre-ionisation tables never meets the fit's rounding. A deeper dip is kept, and the check
+refuses a density or pre-ionisation table that has one. The lift applies to every table
+`profile_table` builds, Raman decay rates and the chi3-weighted Kerr density included:
+it moves a table by at most 64 ulp of its largest value, about the transform noise the
+build already drops, and a negative or sign-changing path dips deeper and keeps its fit.
 
 `validate()` checks: all arrays finite, read-only, C-contiguous (but `initial.field0`,
 which may be a broadcast view: section 6), and of the stated dtype

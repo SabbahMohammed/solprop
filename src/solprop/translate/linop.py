@@ -210,7 +210,8 @@ _ENDPOINT_FLOOR_PROBES = 32
 # lifts as rounding. The build itself drops trailing coefficients up to
 # 8 log2(2 n_deg) ulp of an interval's scale as transform noise (chebyshev._trim), 56
 # ulp at the default highest degree 64; 64 is the power of two above it. A path that
-# goes further below zero is not rounding, and its table is refused.
+# goes further below zero is not rounding, and its table keeps the fit: the domain
+# check refuses it if it is a density or a pre-ionisation fraction.
 _ROUNDOFF_DIP = 64.0 * float(np.finfo(np.float64).eps)
 
 _OperatorAt = Callable[[float], Complex[np.ndarray, "n_batch n_modes n_pol n_omega"]]
@@ -764,7 +765,15 @@ def profile_table(
     interval is lifted by its own dip, which the table's rounding cannot tell from
     zero, so its smallest value is zero (a pinned end in it then sits at most that dip
     above zero). A table that dips any further keeps the fit, and the domain check
-    refuses it.
+    refuses it if it is one the check reads.
+
+    The lift applies to every table built here, not only to the densities and
+    pre-ionisation fractions the domain check reads: a Raman decay rate and the
+    chi3-weighted density of several Kerr responses go through it too. It is harmless
+    there. A table that never dips below zero is returned unchanged, a lift moves a
+    table by at most 64 ulp of its largest value, about the transform noise the build
+    drops from each interval and 70 times below the default `tol`, and a path that is
+    negative, or changes sign by more than rounding, dips further and keeps the fit.
 
     Parameters
     ----------
