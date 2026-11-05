@@ -88,7 +88,7 @@ def test_channel_contract_checks_metadata_and_table_counts(case, damage):
         if damage == "empty_label":
             dataclasses.replace(channel, label="")
         elif damage == "electron_count":
-            # Zero (a neutral channel) and one are admitted since schema 42; two
+            # Zero (a neutral channel) and one are admitted since schema 46; two
             # electrons per event would need sequential charge states.
             dataclasses.replace(channel, electrons_per_event=2.0)
         else:

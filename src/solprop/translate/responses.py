@@ -1043,7 +1043,7 @@ class PlasmaChannel(PlasmaCoefficients):
     """Bind an independent exposure scan to a labelled population.
 
     A channel's events either free one electron each (an ionisation) or none (a
-    **neutral channel**, kernel schema 42: strong-field dissociation into neutral
+    **neutral channel**, kernel schema 46: strong-field dissociation into neutral
     fragments). Both deplete the population, ``f = 1 - (1 - f_0) exp(-int W dt)``, and
     both pay ``ionisation_potential`` per event through the loss current; only an
     ionisation adds to the free-electron current ``rho f (e^2/m_e) n_e E`` and to the
@@ -1066,7 +1066,7 @@ class PlasmaChannel(PlasmaCoefficients):
         Population number density in m^-3 along z.
     electrons_per_event : float
         Free electrons released per event: ``1.0`` (single ionisation) or ``0.0`` (a
-        neutral channel, kernel schema 42), exactly; no other value is admitted.
+        neutral channel, kernel schema 46), exactly; no other value is admitted.
     """
 
     label: str

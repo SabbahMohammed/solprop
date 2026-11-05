@@ -1303,7 +1303,7 @@ class NativeBackend(StepDriver[_core.State]):
             on_axis = np.ascontiguousarray(self._on_axis_synthesis(self._modes))
         plasma = self._problem.responses.plasma_coefficients
         # The one channel's electrons per unit fraction: its density times the
-        # electrons each event frees, zero for a neutral channel (kernel schema 42),
+        # electrons each event frees, zero for a neutral channel (kernel schema 46),
         # which the native statistic multiplies by the largest fraction.
         density = (
             0.0
@@ -3837,7 +3837,7 @@ def _native_problem(
             else np.concatenate([term.undamped for term in raman_terms], axis=0)
         ),
         # The free current's constant: e^2/m_e times the electrons per event, zero
-        # for a neutral channel (solprop kernel schema 42).
+        # for a neutral channel (solprop kernel schema 46).
         "charge_mass_ratio": 0.0 if plasma is None else plasma.free_current_coefficient,
         "ionisation_potential": 0.0 if plasma is None else plasma.ionisation_potential,
         "log_field_min": 0.0 if rate is None else rate.log_field_min,
@@ -4155,7 +4155,7 @@ def _channel_payload(problem: KernelProblem) -> dict[str, object]:
                 rate.rate_max,
                 rate.coefficients.shape[1],
                 offset,
-                # Zero for a neutral channel (solprop kernel schema 42).
+                # Zero for a neutral channel (solprop kernel schema 46).
                 channel.free_current_coefficient,
                 channel.ionisation_potential,
             ]

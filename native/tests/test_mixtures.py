@@ -110,7 +110,7 @@ def test_native_channel_payload_refusals(
         elif damage == "interval":
             parameters[1, 5] = -1
         elif damage == "negative_charge":
-            # Zero is a neutral channel (kernel schema 42); below zero is no channel.
+            # Zero is a neutral channel (kernel schema 46); below zero is no channel.
             parameters[1, 7] = -1.0
         else:
             payload["channel_coefficients"] = np.empty(0)
@@ -150,7 +150,7 @@ def test_native_statistics_refuse_channel_preionisation_shape(
 def test_native_payload_admits_a_neutral_channel(
     mixture_case: tuple[KernelProblem, FieldGrid],
 ) -> None:
-    # Kernel schema 42: a channel's free-current constant (column 7) and the one
+    # Kernel schema 46: a channel's free-current constant (column 7) and the one
     # channel's problem-level constant may be zero, a neutral channel's.
     problem, grid = mixture_case
     backend = NativeBackend(problem, grid=grid)

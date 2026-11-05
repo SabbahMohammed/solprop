@@ -153,7 +153,7 @@ def test_mlx_is_a_single_precision_backend_only():
 
 
 def test_a_neutral_plasma_channel_is_refused_by_name():
-    # Kernel schema 42's neutral channel is not qualified on mlx.
+    # Kernel schema 46's neutral channel is not qualified on mlx.
     problem = mixture_case(electrons_per_event=(1.0, 0.0))[-1]
     single = dataclasses.replace(problem, precision=SINGLE)
     with pytest.raises(BackendError, match="neutral plasma channel"):

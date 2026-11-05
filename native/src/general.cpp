@@ -1194,7 +1194,7 @@ void require_general_problem(const Problem& problem) {
     std::size_t expected_offset = 0;
     for (std::size_t channel = 0; channel < problem.n_channels; ++channel) {
       // Column 7, the free current's constant, is zero for a neutral channel
-      // (solprop kernel schema 42); every other constant stays positive.
+      // (solprop kernel schema 46); every other constant stays positive.
       const double* row = problem.channel_parameters.data() + 9 * channel;
       if (!(row[1] > 0.0 && row[2] > 0.0 && row[3] > row[2] && row[4] >= 0.0 &&
             row[5] >= 1.0 && row[5] == std::floor(row[5]) &&
@@ -1231,7 +1231,7 @@ void require_general_problem(const Problem& problem) {
             "Raman component fractions must be finite and positive");
   }
   if (problem.plasma) {
-    // A neutral channel's free-current constant is zero (solprop kernel schema 42):
+    // A neutral channel's free-current constant is zero (solprop kernel schema 46):
     // its events pay the energy per event and free no charge.
     if (!(problem.dt_fine > 0.0) || !(problem.d_log_field > 0.0) ||
         !(problem.field_min > 0.0) || !(problem.field_max > problem.field_min) ||

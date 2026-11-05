@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Neutral plasma channels on the reference and the compiled backends (schema 42).
+"""Neutral plasma channels on the reference and the compiled backends (schema 46).
 
 A neutral channel (``electrons_per_event=0``) shares its population's exposure scan and
 loss current with an ionising one and adds no free-electron current and no electrons.

@@ -4,7 +4,7 @@
 
 """Neutral plasma channels: events that pay their energy and free no charge.
 
-A neutral channel (``electrons_per_event=0``, kernel schema 42) depletes its population
+A neutral channel (``electrons_per_event=0``, kernel schema 46) depletes its population
 at its rate and pays its energy per event through the loss current, exactly as an
 ionisation does, and adds no free-electron current. These tests hold the response to
 that analytically -- the energy identity, the loss current written out independently,

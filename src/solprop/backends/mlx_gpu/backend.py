@@ -175,7 +175,7 @@ def refuse_unsupported(problem: KernelProblem) -> None:
                 channel.electrons_per_event == 0.0
                 for channel in problem.responses.plasma_channels
             ),
-            "a neutral plasma channel (electrons_per_event=0.0, kernel schema 42): "
+            "a neutral plasma channel (electrons_per_event=0.0, kernel schema 46): "
             "it is not qualified on mlx; use backend='numpy_ref' or 'native'",
         ),
     ]
