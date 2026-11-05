@@ -474,7 +474,10 @@ has neither feature; both are listed among the capabilities beyond it.
    ([SEP 18](archive/sep-0018-band-exact-plasma-integrals.md)) weigh channels by their
    electrons per event? It counts a neutral channel's $|fE|$
    as if it carried free current. An issue.
-9. Should `NeutralChannel` be registered for recipes (SEP 41)? Additive; an issue.
+9. Should `NeutralChannel` be registered for recipes (SEP 41)? A recipe already
+   declares a neutral channel through `PlasmaResponse`'s `electrons_per_event = 0`
+   (since the integration with `main`); only the `NeutralChannel` spelling of a
+   `plasma` mapping has no recipe type. Additive; an issue.
 10. Is the release tag "0.2.0" right for the compatibility entry that reads an absent
     `electrons_per_event` as one? It follows SEP 41's entries. For review.
 
@@ -686,9 +689,11 @@ has neither feature; both are listed among the capabilities beyond it.
   `plasma_boundary_level` still counts a neutral channel's $|fE|$ as if it carried free
   current, on every backend alike, so a pre-reacted neutral population can raise it
   spuriously (Q8). The total `peak_ionisation_rate` includes neutral event rates (Q6).
-  Recipes cannot name `NeutralChannel` (Q9). An `OptmatRate` holds its rate above its
-  model's maximum field, so a run whose field exceeds it sees the held rate; a caller
-  who needs the rate law beyond it supplies a rate of their own.
+  Recipes cannot name `NeutralChannel` (Q9); since the integration with `main` they
+  declare a neutral channel through `PlasmaResponse`'s `electrons_per_event`. An
+  `OptmatRate` holds its rate above its model's maximum field, so a run whose field
+  exceeds it sees the held rate; a caller who needs the rate law beyond it supplies a
+  rate of their own.
 - **Open questions:** Q4 and Q6–Q10 of §12.
 - **Handoff:** the channel is complete on `numpy_ref` and native. At a rebase onto
   `main` after SEP 43, `numba_cpu`'s packing drops out with the backend, and the schema
@@ -704,12 +709,15 @@ has neither feature; both are listed among the capabilities beyond it.
 - **Delivered:** the neutral channel at kernel schema 46 (the literals, the contract's
   version note, the native backend's schema note); `numba_cpu`'s packing of the
   channel dropped with the backend; `electrons_per_event` named in `PlasmaResponse`'s
-  recipe table (SEP 41), which upstream's metadata tests require. Phase 1 merged
-  without conflict. D5 revised: `electrons_per_event` is recorded only where it is not
-  one (a dataclass field's `record_default=False`, beside `main`'s `record_none=False`),
-  so a single-ionisation run keeps its record and configuration hash, as `main` keeps
-  them for its own optional fields; `main`'s pinned record of a capillary call without
-  TDSE (`tests/driver/test_tdse_entry.py`) caught the change of every plasma record.
+  recipe table (SEP 41), which upstream's metadata tests require: a recipe declares a
+  neutral channel with `{type = "PlasmaResponse", ..., electrons_per_event = 0}`, and
+  `check()` refuses any value but 0 and 1 (`tests/recipe/test_free_space.py`). Phase
+  1 merged without conflict. D5 revised: `electrons_per_event` is recorded only where
+  it is not one (a dataclass field's `record_default=False`, beside `main`'s
+  `record_none=False`), so a single-ionisation run keeps its record and configuration
+  hash, as `main` keeps them for its own optional fields; `main`'s pinned record of a
+  capillary call without TDSE (`tests/driver/test_tdse_entry.py`) caught the change of
+  every plasma record.
 - **Verification:** the new and affected modules on `numpy_ref` and native (the neutral
   channel, optmat rates, the mixture ladder, the driver, the problem, the summary, the
   modes and the recipes, the native contract, backend and mixture tests) pass on the

@@ -406,8 +406,9 @@ $\rho U(f_{\rm end}-f_0)$: the energy per event times the events, and nothing el
 A channel is declared neutral where its rate is given, with
 {class}`~solprop.nonlinear.ionisation.NeutralChannel`, per label in a mixture; or with
 `electrons_per_event=0.0` on a
-{class}`~solprop.nonlinear.responses.PlasmaResponse`. The energy per event is found as
-an ionising channel's is: the rate's own (an
+{class}`~solprop.nonlinear.responses.PlasmaResponse`, which is also how a recipe declares
+one: `{type = "PlasmaResponse", ..., electrons_per_event = 0}`. The energy per event is
+found as an ionising channel's is: the rate's own (an
 {class}`~solprop.nonlinear.optmat_rates.OptmatRate` declares it), or else the
 species' ionisation data, which for a neutral channel holds the barrier. An optmat
 model from explicit parameters gives a tunnelling rate at a chosen barrier:

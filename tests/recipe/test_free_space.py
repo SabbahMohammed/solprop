@@ -359,6 +359,37 @@ def test_check_is_clean(name):
     assert Recipe.loads(CASES[name][0]).check() == []
 
 
+def _field_with_electrons_per_event(value: str) -> Recipe:
+    """The field recipe with its plasma response's electrons_per_event set."""
+    plain = 'integration = "trapezoid" }'
+    text = FIELD.replace(
+        plain, f'integration = "trapezoid", electrons_per_event = {value} }}'
+    )
+    assert text != FIELD
+    return Recipe.loads(text)
+
+
+@pytest.mark.parametrize(("value", "neutral"), [("0", True), ("1", False)])
+def test_a_recipe_reaches_a_neutral_channel_through_electrons_per_event(value, neutral):
+    # SEP 44: NeutralChannel has no recipe type, and PlasmaResponse's keyword is how a
+    # recipe declares one.
+    recipe = _field_with_electrons_per_event(value)
+    assert recipe.check() == []
+    (plasma,) = [
+        response
+        for response in recipe.build().responses
+        if isinstance(response, PlasmaResponse)
+    ]
+    assert plasma.electrons_per_event == float(value)
+    assert plasma.neutral is neutral
+
+
+def test_a_recipe_refuses_a_fraction_of_an_electron_per_event():
+    (issue,) = _field_with_electrons_per_event("0.5").check()
+    assert issue.parameter == "responses"
+    assert "electrons_per_event must be 0.0 (a neutral channel" in issue.message
+
+
 def test_the_object_routes_list_their_objects_and_leave_the_absorber_to_settings():
     for name in OBJECT_ROUTES:
         table = parameters(name)
