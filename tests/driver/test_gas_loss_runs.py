@@ -63,11 +63,18 @@ BACKENDS = runnable_backends()
 
 
 def test_the_backends_are_read_from_the_registry(monkeypatch):
-    """A backend the registry does not know is not run (SEP 43 drops ``numba_cpu``)."""
+    """A backend the registry knows is run, and one it drops is not (SEP 43).
+
+    The stand-in entry needs only NumPy, so it is installed wherever the test runs,
+    and a list written out instead of read would miss it.
+    """
     known = dict(registry.BACKENDS)
-    known.pop("numba_cpu", None)
+    known["stand_in"] = registry.BackendEntry(requires=("numpy",), extras=())
     monkeypatch.setattr(registry, "BACKENDS", known)
-    assert "numba_cpu" not in runnable_backends()
+    assert runnable_backends()[0] == "numpy_ref"
+    assert "stand_in" in runnable_backends()
+    del known["stand_in"]
+    assert "stand_in" not in runnable_backends()
     assert runnable_backends()[0] == "numpy_ref"
 
 
