@@ -754,9 +754,12 @@ def profile_table(
     either sign -- its end samples are inset by one ulp and its coefficients are
     rounded -- and a density below zero is refused by the problem's domain check. The
     correction moves only those ends, and only while it changes the interval by at most
-    `tol`, so a path that is negative anywhere stays negative in its table and is still
-    refused. A path that leaves zero too steeply for its inset sample to be round-off
-    (a square-root vacuum end) keeps the table the fit gave.
+    `tol`, so it does not lift a path that is negative inside an interval; the lift
+    below lifts only one that is below zero by rounding. A path below zero by more than
+    that stays below zero in its table, and the domain check refuses it if it is one the
+    check reads, a density or a pre-ionisation fraction. A path that leaves zero too
+    steeply for its inset sample to be round-off (a square-root vacuum end) keeps the
+    table the fit gave.
 
     A path that touches zero can still leave its table just below zero inside an
     interval: a curve that meets a zero end with zero slope, whose pinned end leaves
@@ -764,16 +767,21 @@ def profile_table(
     Where every such dip is within 64 ulp of the table's largest value, each dipping
     interval is lifted by its own dip, which the table's rounding cannot tell from
     zero, so its smallest value is zero (a pinned end in it then sits at most that dip
-    above zero). A table that dips any further keeps the fit, and the domain check
-    refuses it if it is one the check reads.
+    above zero). A path that is itself below zero by no more than that is lifted alike:
+    one falling linearly from 1 to -1e-14 is tabulated as falling to 0. A table that
+    dips any further keeps the fit, and the domain check refuses it if it is one the
+    check reads.
 
     The lift applies to every table built here, not only to the densities and
     pre-ionisation fractions the domain check reads: a Raman decay rate and the
     chi3-weighted density of several Kerr responses go through it too. It is harmless
-    there. A table that never dips below zero is returned unchanged, a lift moves a
-    table by at most 64 ulp of its largest value, about the transform noise the build
-    drops from each interval and 70 times below the default `tol`, and a path that is
-    negative, or changes sign by more than rounding, dips further and keeps the fit.
+    there. A table that never dips below zero is returned unchanged, and a lift moves a
+    table by at most 64 ulp of its largest value. That is about the transform noise the
+    build drops from an interval whose scale is that largest value, and 70 times below
+    the error the default `tol` allows on such an interval; both are relative to each
+    interval's own scale, so on an interval of much smaller values, near a vacuum, a
+    lift can exceed them. A path that is negative, or changes sign, by more than
+    rounding dips further and keeps the fit.
 
     Parameters
     ----------

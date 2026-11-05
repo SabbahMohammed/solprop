@@ -637,8 +637,8 @@ def test_the_endpoint_table_relaxes_its_tolerance_on_noise_no_probe_saw(
             short_gradient_z_table, sample, None, None, quantity="noisy weight"
         )
     # One relaxation, by a decade, and the table it ends with is resolved. The decade is
-    # one multiplication, so it compares exactly: the tolerances, near 1e-15, sit far
-    # below pytest.approx's default absolute tolerance of 1e-12.
+    # one multiplication, so it compares exactly: the tolerances, 1.8e-15 and 1.8e-14,
+    # sit far below pytest.approx's default absolute tolerance of 1e-12.
     assert [exceeded for _, exceeded in builds] == [True, False]
     assert builds[1][0] == 10.0 * builds[0][0]
     assert "noisy weight exhausted the interval budget;" in caplog.text

@@ -282,9 +282,12 @@ ulp of its largest value (a zero met with zero slope, a fit ringing about a vacu
 lifts each dipping interval by its dip, so the non-negativity check on density and
 pre-ionisation tables never meets the fit's rounding. A deeper dip is kept, and the check
 refuses a density or pre-ionisation table that has one. The lift applies to every table
-`profile_table` builds, Raman decay rates and the chi3-weighted Kerr density included:
-it moves a table by at most 64 ulp of its largest value, about the transform noise the
-build already drops, and a negative or sign-changing path dips deeper and keeps its fit.
+`profile_table` builds, Raman decay rates and the chi3-weighted Kerr density included.
+It moves a table by at most 64 ulp of its largest value: about the transform noise the
+build drops from an interval of that scale, and 70 times below the error the default
+tolerance allows there. Both are relative to each interval's own scale, so on an
+interval of much smaller values, near a vacuum, a lift can exceed them. A path that is
+negative, or changes sign, by more than rounding dips deeper and keeps its fit.
 
 `validate()` checks: all arrays finite, read-only, C-contiguous (but `initial.field0`,
 which may be a broadcast view: section 6), and of the stated dtype
